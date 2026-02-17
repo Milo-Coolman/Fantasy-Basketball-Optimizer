@@ -1,0 +1,119 @@
+======================================================================
+FANTASY BASKETBALL ML MODEL TRAINING REPORT
+======================================================================
+Generated: 2026-02-04 16:35:33
+Models Directory: /Users/milo/fantasy-basketball-optimizer/backend/projections/trained_models
+
+MODEL PERFORMANCE SUMMARY
+----------------------------------------------------------------------
+Stat       Algorithm            RMSE       MAE        R²         Time      
+----------------------------------------------------------------------
+PTS        gradient_boosting    0.2945     0.1532     0.9977     5.9s      
+TRB        gradient_boosting    0.1301     0.0854     0.9967     5.9s      
+AST        gradient_boosting    0.0861     0.0560     0.9977     6.4s      
+STL        gradient_boosting    0.0352     0.0278     0.9900     5.9s      
+BLK        gradient_boosting    0.0585     0.0317     0.9842     5.9s      
+TOV        gradient_boosting    0.2708     0.1944     0.8872     5.9s      
+3P         gradient_boosting    0.1075     0.0782     0.9822     5.9s      
+FG_PCT     ridge                0.0060     0.0047     0.9912     0.0s      
+FT_PCT     ridge                0.0347     0.0240     0.8753     0.0s      
+----------------------------------------------------------------------
+Total Training Time: 41.8s
+
+
+DETAILED METRICS BY MODEL
+======================================================================
+
+PTS
+----------------------------------------
+  Algorithm:          gradient_boosting
+  Features:           33
+  Test RMSE:          0.2945
+  Test MAE:           0.1532
+  Test R²:            0.9977
+  Explained Variance: 0.9977
+  CV RMSE:            0.2493 (+/- 0.0356)
+
+TRB
+----------------------------------------
+  Algorithm:          gradient_boosting
+  Features:           33
+  Test RMSE:          0.1301
+  Test MAE:           0.0854
+  Test R²:            0.9967
+  Explained Variance: 0.9967
+  CV RMSE:            0.1771 (+/- 0.0571)
+
+AST
+----------------------------------------
+  Algorithm:          gradient_boosting
+  Features:           33
+  Test RMSE:          0.0861
+  Test MAE:           0.0560
+  Test R²:            0.9977
+  Explained Variance: 0.9977
+  CV RMSE:            0.0843 (+/- 0.0084)
+
+STL
+----------------------------------------
+  Algorithm:          gradient_boosting
+  Features:           33
+  Test RMSE:          0.0352
+  Test MAE:           0.0278
+  Test R²:            0.9900
+  Explained Variance: 0.9900
+  CV RMSE:            0.0382 (+/- 0.0026)
+
+BLK
+----------------------------------------
+  Algorithm:          gradient_boosting
+  Features:           33
+  Test RMSE:          0.0585
+  Test MAE:           0.0317
+  Test R²:            0.9842
+  Explained Variance: 0.9843
+  CV RMSE:            0.0464 (+/- 0.0133)
+
+TOV
+----------------------------------------
+  Algorithm:          gradient_boosting
+  Features:           33
+  Test RMSE:          0.2708
+  Test MAE:           0.1944
+  Test R²:            0.8872
+  Explained Variance: 0.8874
+  CV RMSE:            0.2620 (+/- 0.0070)
+
+3P
+----------------------------------------
+  Algorithm:          gradient_boosting
+  Features:           33
+  Test RMSE:          0.1075
+  Test MAE:           0.0782
+  Test R²:            0.9822
+  Explained Variance: 0.9823
+  CV RMSE:            0.1187 (+/- 0.0043)
+
+FG_PCT
+----------------------------------------
+  Algorithm:          ridge
+  Features:           15
+  Test RMSE:          0.0060
+  Test MAE:           0.0047
+  Test R²:            0.9912
+  Explained Variance: 0.9914
+  CV RMSE:            0.0064 (+/- 0.0001)
+
+FT_PCT
+----------------------------------------
+  Algorithm:          ridge
+  Features:           15
+  Test RMSE:          0.0347
+  Test MAE:           0.0240
+  Test R²:            0.8753
+  Explained Variance: 0.8753
+  CV RMSE:            0.0358 (+/- 0.0025)
+
+======================================================================
+END OF REPORT
+======================================================================
