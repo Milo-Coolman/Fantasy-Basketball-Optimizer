@@ -3695,3 +3695,260 @@ a:hover {
     margin-left: 0;
   }
 }
+
+/* =============================================================================
+   Projection Settings Component
+   ============================================================================= */
+
+.projection-settings {
+  margin-bottom: var(--spacing-md);
+  background-color: var(--bg-card);
+  border-radius: var(--border-radius);
+  border: 1px solid var(--border-color);
+  overflow: hidden;
+}
+
+.projection-settings .settings-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-align: left;
+  transition: background-color 0.15s ease;
+}
+
+.projection-settings .settings-header:hover {
+  background-color: var(--bg-hover);
+}
+
+.projection-settings .settings-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-secondary);
+}
+
+.projection-settings .settings-title {
+  flex: 1;
+}
+
+.projection-settings .loading-text {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.projection-settings .chevron {
+  display: flex;
+  align-items: center;
+  color: var(--text-secondary);
+  transition: transform 0.2s ease;
+}
+
+.projection-settings .chevron.expanded {
+  transform: rotate(180deg);
+}
+
+.projection-settings .settings-content {
+  padding: var(--spacing-md);
+  padding-top: 0;
+  border-top: 1px solid var(--border-color);
+}
+
+.projection-settings .settings-section {
+  margin-bottom: var(--spacing-lg);
+}
+
+.projection-settings .settings-section:last-child {
+  margin-bottom: 0;
+}
+
+.projection-settings .settings-section h4 {
+  margin: 0 0 var(--spacing-xs) 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.projection-settings .section-description {
+  margin: 0 0 var(--spacing-md) 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+/* Method Options (Radio buttons) */
+.projection-settings .method-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.projection-settings .method-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  background-color: var(--bg-secondary);
+  border: 2px solid var(--border-color);
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.projection-settings .method-option:hover {
+  border-color: var(--color-primary);
+  background-color: var(--bg-hover);
+}
+
+.projection-settings .method-option.selected {
+  border-color: var(--color-primary);
+  background-color: rgba(59, 130, 246, 0.08);
+}
+
+.projection-settings .method-option input[type="radio"] {
+  margin-top: 3px;
+  accent-color: var(--color-primary);
+}
+
+.projection-settings .option-content {
+  flex: 1;
+}
+
+.projection-settings .option-title {
+  display: block;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+
+.projection-settings .option-description {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.projection-settings .option-details {
+  margin: var(--spacing-xs) 0 0 0;
+  padding-left: var(--spacing-md);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.projection-settings .option-details li {
+  margin-bottom: 2px;
+}
+
+/* Rate Slider */
+.projection-settings .rate-section {
+  padding: var(--spacing-md);
+  background-color: var(--bg-secondary);
+  border-radius: var(--border-radius);
+}
+
+.projection-settings .rate-control {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.projection-settings .rate-slider {
+  flex: 1;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--border-color);
+  border-radius: 3px;
+  outline: none;
+}
+
+.projection-settings .rate-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  background: var(--color-primary);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.projection-settings .rate-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+}
+
+.projection-settings .rate-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  background: var(--color-primary);
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+.projection-settings .rate-value {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 80px;
+}
+
+.projection-settings .rate-number {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.projection-settings .rate-label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.projection-settings .rate-hint {
+  margin: var(--spacing-sm) 0 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Settings Actions */
+.projection-settings .settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--border-color);
+}
+
+/* Alert styles for settings */
+.projection-settings .alert.small {
+  padding: var(--spacing-sm) var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+  font-size: 0.8rem;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .projection-settings .method-options {
+    gap: var(--spacing-xs);
+  }
+
+  .projection-settings .method-option {
+    padding: var(--spacing-sm);
+  }
+
+  .projection-settings .rate-control {
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+
+  .projection-settings .rate-slider {
+    width: 100%;
+  }
+}

@@ -106,11 +106,10 @@ coverage==7.4.1             # Code coverage reporting
 # Flask-Caching==2.1.0
 
 # -----------------------------------------------------------------------------
-# Optional: Database Migrations
+# Database Migrations
 # -----------------------------------------------------------------------------
-# Uncomment when ready for production migrations:
-# Flask-Migrate==4.0.5
-# alembic==1.13.1
+Flask-Migrate==4.0.5
+alembic==1.13.1
 
 # -----------------------------------------------------------------------------
 # Optional: API Documentation

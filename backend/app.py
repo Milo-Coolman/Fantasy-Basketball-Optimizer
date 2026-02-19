@@ -12,7 +12,7 @@ from logging.handlers import RotatingFileHandler
 from flask import Flask, jsonify
 from flask_cors import CORS
 
-from backend.extensions import db, login_manager, bcrypt
+from backend.extensions import db, login_manager, bcrypt, migrate
 from backend.config import get_config
 from backend.services.scheduler_service import init_scheduler, shutdown_scheduler, get_scheduler
 
@@ -36,6 +36,7 @@ def create_app(config_class=None):
 
     # Initialize extensions
     db.init_app(app)
+    migrate.init_app(app, db)
     login_manager.init_app(app)
     bcrypt.init_app(app)
 

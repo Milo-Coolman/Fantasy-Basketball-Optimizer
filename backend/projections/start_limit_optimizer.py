@@ -204,13 +204,20 @@ class StartLimitOptimizer:
         swid: str,
         league_id: int,
         season: int,
-        verbose: bool = True
+        verbose: bool = True,
+        projection_method: str = 'adaptive',
+        flat_game_rate: float = 0.85
     ):
         self.espn_s2 = espn_s2
         self.swid = swid
         self.league_id = league_id
         self.season = season
         self.verbose = verbose
+        self.projection_method = projection_method
+        self.flat_game_rate = flat_game_rate
+
+        # Log projection settings
+        logger.info(f"[StartLimitOptimizer] Initialized with projection_method={projection_method}, flat_game_rate={flat_game_rate:.1%}")
 
         # Cached data
         self._roster_settings: Optional[Dict] = None
@@ -332,6 +339,8 @@ class StartLimitOptimizer:
                 previous_season_stats=previous_season_stats,
                 espn_projection=espn_projection,
                 injury_status=player_data.get('injury_status', 'ACTIVE'),
+                projection_method=self.projection_method,
+                flat_game_rate=self.flat_game_rate,
             )
 
             return projection.projected_stats
@@ -463,6 +472,8 @@ class StartLimitOptimizer:
                         previous_season_stats=previous_stats if previous_stats else None,
                         espn_projection=espn_proj_stats if espn_proj_stats else None,
                         injury_status=injury_status,
+                        projection_method=self.projection_method,
+                        flat_game_rate=self.flat_game_rate,
                     )
 
                     # Use hybrid projected stats and normalize to ESPN format
@@ -778,26 +789,34 @@ class StartLimitOptimizer:
             if injury_details and isinstance(injury_details, dict):
                 actual_return_date = injury_details.get('expected_return_date')
 
-            # Determine return date - only use REAL data, never invent dates
+            # Determine return date - only use REAL data, NEVER invent dates
             projected_return = None
-            games_after_return = projected_games
+            has_real_return_date = False
 
             if player_id in manual_return_dates:
                 # Use manually specified date
                 projected_return = manual_return_dates[player_id]
-                self._log(f"IR: {player_name} - Using manual return date: {projected_return}")
+                has_real_return_date = True
+                self._log(f"IR: {player_name} - Manual return date: {projected_return}")
             elif actual_return_date:
-                # Use ESPN's actual return date
+                # Use ESPN's actual return date - this is real data
                 projected_return = actual_return_date
-                self._log(f"IR: {player_name} - Using ESPN return date: {projected_return}")
+                has_real_return_date = True
+                self._log(f"IR: {player_name} - ESPN return date: {projected_return}")
             else:
-                # No return date available - use today (assume imminent return)
-                # This is conservative: IR players with projected_games > 0 should return soon
-                projected_return = today
-                self._log(f"IR: {player_name} - No ESPN return date, assuming imminent return")
+                # No return date available - DO NOT invent one
+                # Player has projected_games > 0, so hybrid engine expects them to play
+                # We'll treat them as available from today in simulation, but don't set a fake date
+                projected_return = None
+                self._log(f"IR: {player_name} - No ESPN return date (projected_games={projected_games})")
 
             # Check if player will return before season ends
-            will_return = projected_return is not None and projected_return < season_end_date
+            # If no return date but projected_games > 0, assume they will return
+            if projected_return is not None:
+                will_return = projected_return < season_end_date
+            else:
+                # No date but has games projected - assume will return (from today)
+                will_return = projected_games > 0
 
             # Use projected_games directly as games_after_return
             # The hybrid engine already calculated this correctly
@@ -820,8 +839,12 @@ class StartLimitOptimizer:
             ir_players.append(ir_info)
 
             if will_return:
-                self._log(f"IR: {player_name} - return={projected_return}, "
-                         f"games={games_after_return}, value={per_game_value:.1f}")
+                if projected_return:
+                    self._log(f"IR: {player_name} - IR return {projected_return}, "
+                             f"games={games_after_return}, value={per_game_value:.1f}")
+                else:
+                    self._log(f"IR: {player_name} - No return date, "
+                             f"games={games_after_return}, value={per_game_value:.1f} (available now)")
             else:
                 self._log(f"IR: {player_name} - will NOT return before season end")
 
@@ -961,7 +984,8 @@ class StartLimitOptimizer:
 
         # Calculate IR player's per-game stats
         ir_per_game = ir_player.per_game_stats or {}
-        self._log(f"  IR Player {ir_player.player_name}: returning {ir_player.projected_return_date}")
+        return_str = f"returning {ir_player.projected_return_date}" if ir_player.projected_return_date else "available now"
+        self._log(f"  IR Player {ir_player.player_name}: {return_str}")
 
         # Analyze each drop scenario
         scenarios: List[RotoDropScenario] = []
@@ -2072,12 +2096,18 @@ class StartLimitOptimizer:
                     ir_player.replacing_player_name = optimal_drop.get('name', 'Unknown')
                     already_dropping.add(optimal_drop.get('player_id'))
 
-                    self._log(f"\n  {ir_player.player_name}: Returns {ir_player.projected_return_date}, "
+                    # Log return info - show actual date only if we have one
+                    if ir_player.projected_return_date:
+                        return_info = f"IR return {ir_player.projected_return_date}"
+                    else:
+                        return_info = "Available now (no ESPN return date)"
+                    self._log(f"\n  {ir_player.player_name}: {return_info}, "
                              f"Replacing {ir_player.replacing_player_name}, "
                              f"+{ir_player.games_after_return} games")
 
-                    # Schedule this return
-                    ir_return_schedule[ir_player.projected_return_date].append(ir_player)
+                    # Schedule this return - use start_date if no return date
+                    effective_return = ir_player.projected_return_date or start_date
+                    ir_return_schedule[effective_return].append(ir_player)
                 else:
                     self._log(f"  {ir_player.player_name}: No droppable player found")
 
@@ -2144,9 +2174,13 @@ class StartLimitOptimizer:
             if actual_return_date and actual_return_date > start_date and actual_return_date <= end_date:
                 out_player_ids.add(player_id)
 
-                # Get schedule from return date onward only
+                # Get schedule from return date onward only (for daily simulation)
                 team_games = self.get_player_nba_team_schedule(nba_team, actual_return_date, end_date)
                 player_schedules[player_id] = set(team_games)
+
+                # Use projected_games from hybrid engine (already accounts for game_rate)
+                # NOT len(team_games) which is raw schedule count
+                player_projected_games = projected_games
 
                 # Create player log
                 player_logs[player_id] = PlayerGameLog(
@@ -2155,7 +2189,7 @@ class StartLimitOptimizer:
                     nba_team=nba_team,
                     eligible_slots=eligible_starting,
                     per_game_value=per_game_value,
-                    total_games_available=len(team_games),
+                    total_games_available=player_projected_games,  # Use hybrid engine's projection
                 )
 
                 # Schedule their return
@@ -2164,8 +2198,8 @@ class StartLimitOptimizer:
                     'player_name': player_name,
                 })
 
-                self._log(f"  {player_name} ({nba_team}): INJURED with ESPN return_date={actual_return_date}, "
-                         f"{len(team_games)} games after return, value={per_game_value:.1f}")
+                self._log(f"  {player_name} ({nba_team}): INJURED, ESPN return={actual_return_date}, "
+                         f"projected_games={player_projected_games} (from hybrid engine), value={per_game_value:.1f}")
                 continue
 
             # Regular active player - available for all remaining team games
@@ -2196,28 +2230,37 @@ class StartLimitOptimizer:
                 if not ir_player.will_return_before_season_end:
                     continue
 
-                # Get schedule from return date onward
+                # Get schedule from return date onward (for daily simulation)
+                effective_return = ir_player.projected_return_date or start_date
+                team_games = self.get_player_nba_team_schedule(
+                    ir_player.nba_team,
+                    effective_return,
+                    end_date
+                )
+                player_schedules[ir_player.player_id] = set(team_games)
+
+                # Use games_after_return from IR player info (already set from projected_games)
+                # NOT len(team_games) which is raw schedule count
+                ir_projected_games = ir_player.games_after_return
+
+                # Create player log (starts with 0 games available, updated on return)
+                player_logs[ir_player.player_id] = PlayerGameLog(
+                    player_id=ir_player.player_id,
+                    player_name=ir_player.player_name,
+                    nba_team=ir_player.nba_team,
+                    eligible_slots=ir_player.eligible_slots,
+                    per_game_value=ir_player.per_game_value,
+                    total_games_available=ir_projected_games,  # Use hybrid engine's projection
+                )
+
                 if ir_player.projected_return_date:
-                    team_games = self.get_player_nba_team_schedule(
-                        ir_player.nba_team,
-                        ir_player.projected_return_date,
-                        end_date
-                    )
-                    player_schedules[ir_player.player_id] = set(team_games)
-
-                    # Create player log (starts with 0 games available, updated on return)
-                    player_logs[ir_player.player_id] = PlayerGameLog(
-                        player_id=ir_player.player_id,
-                        player_name=ir_player.player_name,
-                        nba_team=ir_player.nba_team,
-                        eligible_slots=ir_player.eligible_slots,
-                        per_game_value=ir_player.per_game_value,
-                        total_games_available=len(team_games),
-                    )
-
                     self._log(f"  {ir_player.player_name} ({ir_player.nba_team}): "
                              f"IR return {ir_player.projected_return_date}, "
-                             f"{len(team_games)} games after return")
+                             f"projected_games={ir_projected_games} (from hybrid engine)")
+                else:
+                    self._log(f"  {ir_player.player_name} ({ir_player.nba_team}): "
+                             f"No ESPN return date, available now, "
+                             f"projected_games={ir_projected_games} (from hybrid engine)")
 
         # =================================================================
         # DEBUG: Summary of player categorization
@@ -2253,6 +2296,17 @@ class StartLimitOptimizer:
 
         current_date = start_date
         game_days = 0
+
+        # Track starts per player to enforce projected_games limit
+        player_starts_used = defaultdict(int)
+
+        # Build projected_games lookup from roster
+        player_projected_games = {}
+        for p in roster:
+            pid = p.get('player_id', 0)
+            proj_games = p.get('original_projected_games', 0)
+            player_projected_games[pid] = proj_games
+            self._log(f"  Player {p.get('name', 'Unknown')} (ID={pid}): projected_games limit = {proj_games}")
 
         while current_date <= end_date:
             # Check for IR player returns today
@@ -2312,6 +2366,15 @@ class StartLimitOptimizer:
 
                 if current_date in game_dates:
                     if log:
+                        # Check if player has exhausted their projected_games limit
+                        proj_limit = player_projected_games.get(player_id, 0)
+                        starts_so_far = player_starts_used[player_id]
+                        if proj_limit > 0 and starts_so_far >= proj_limit:
+                            # Player has reached their projected games limit - skip
+                            if is_jjj_player or self.verbose:
+                                self._log(f"  >>> {log.player_name}: LIMIT REACHED ({starts_so_far}/{proj_limit} games)")
+                            continue
+
                         # DEBUG: Log when JJJ is added to available players
                         if is_jjj_player and game_days < 5:
                             self._log(f"  >>> JJJ ADDED TO available_today on {current_date}!")
@@ -2337,6 +2400,11 @@ class StartLimitOptimizer:
                 )
                 daily_simulations.append(day_result)
 
+                # Update player starts tracking based on assignments
+                # assignments is Dict[int, int] mapping slot_id -> player_id
+                for slot_id, assigned_player_id in day_result.assignments.items():
+                    player_starts_used[assigned_player_id] += 1
+
                 # Log summary for this day
                 if self.verbose and len(daily_simulations) <= 10:
                     started = len(day_result.assignments)
@@ -2361,12 +2429,32 @@ class StartLimitOptimizer:
             pct = (count / limit * 100) if limit > 0 else 0
             self._log(f"  {pos_name}: {count}/{limit} ({pct:.1f}%)")
 
-        self._log("\nPlayer start summary:")
+        self._log("\nPlayer start summary (with projected_games enforcement):")
         for player_id, log in sorted(player_logs.items(), key=lambda x: x[1].games_started, reverse=True):
             # Mark dropped players
             dropped_marker = " [DROPPED]" if player_id in dropped_player_ids else ""
-            self._log(f"  {log.player_name}: {log.games_started}/{log.total_games_available} "
-                     f"({log.start_percentage:.1f}% started, {log.games_benched} benched){dropped_marker}")
+            proj_limit = player_projected_games.get(player_id, 0)
+            actual_starts = player_starts_used.get(player_id, 0)
+            # Only show LIMIT REACHED when player actually hit their limit
+            if proj_limit > 0 and actual_starts >= proj_limit:
+                limit_status = "LIMIT REACHED"
+            else:
+                limit_status = f"{log.games_benched} benched"
+            self._log(f"  {log.player_name}: {actual_starts}/{proj_limit} starts ({limit_status}){dropped_marker}")
+
+        # Validation: Check no player exceeded their projected_games limit
+        self._log("\nValidation - checking projected_games enforcement:")
+        violations_found = False
+        for player_id, starts in player_starts_used.items():
+            proj_limit = player_projected_games.get(player_id, 0)
+            if proj_limit > 0 and starts > proj_limit:
+                log = player_logs.get(player_id)
+                player_name = log.player_name if log else f"ID:{player_id}"
+                logger.warning(f"BUG: {player_name} used {starts} starts but projected for only {proj_limit}")
+                self._log(f"  [VIOLATION] {player_name}: {starts} > {proj_limit}")
+                violations_found = True
+        if not violations_found:
+            self._log("  [OK] All players within projected_games limits")
 
         # Log IR summary
         if include_ir_returns and ir_players_processed:
@@ -2375,8 +2463,9 @@ class StartLimitOptimizer:
                 if ir_player.will_return_before_season_end:
                     log = player_logs.get(ir_player.player_id)
                     games_started = log.games_started if log else 0
+                    return_str = f"IR return {ir_player.projected_return_date}" if ir_player.projected_return_date else "Available now"
                     self._log(f"  IR: {ir_player.player_name} - "
-                             f"Projected return: {ir_player.projected_return_date}, "
+                             f"{return_str}, "
                              f"Replacing: {ir_player.replacing_player_name or 'N/A'}, "
                              f"Adding {games_started} starts")
                 else:
@@ -2432,6 +2521,8 @@ class StartLimitOptimizer:
             # Extract per-game stats from total projections
             projected_stats = player.get('projected_stats', {})
             projected_games = player.get('projected_games', 1)
+            player_name = player.get('name', 'Unknown')
+            self._log(f"[OPTIMIZER RECEIVED] {player_name}: projected_games={projected_games}")
 
             per_game_stats = {}
             if projected_games > 0:
@@ -2452,6 +2543,7 @@ class StartLimitOptimizer:
                 'original_projected_games': projected_games,
                 'lineupSlotId': player.get('lineupSlotId', 0),
                 'injury_status': player.get('injury_status', 'ACTIVE'),
+                'injury_details': player.get('injury_details'),  # ESPN injury data with expected_return_date
                 'season_outlook': player.get('season_outlook', ''),
                 'droppable': player.get('droppable', True),
             })

@@ -674,3 +674,90 @@ def get_free_agents(league_id):
     except Exception as e:
         logger.error(f"Error fetching free agents: {e}")
         return jsonify({'error': 'Failed to fetch free agents'}), 500
+
+
+@leagues_bp.route('/<int:league_id>/projection-settings', methods=['GET', 'PUT'])
+@login_required
+def projection_settings(league_id):
+    """
+    Get or update game projection settings for the league.
+
+    GET Response:
+        {
+            projection_method: 'adaptive' | 'flat_rate',
+            flat_game_rate: float (0.70-1.00)
+        }
+
+    PUT Request JSON:
+        projection_method: 'adaptive' or 'flat_rate'
+        flat_game_rate: float between 0.70 and 1.00 (only used when method='flat_rate')
+
+    Projection Methods:
+        - 'adaptive': Uses tiered game_rate based on games played
+            * 0 GP with return date: 90%
+            * 0 GP no return date: 85%
+            * Otherwise: max(75%, games_played / team_games_so_far)
+        - 'flat_rate': Uses fixed percentage for all players
+            * All players get the same game_rate (e.g., 85%)
+    """
+    from backend.extensions import db
+
+    try:
+        league = get_league_or_404(league_id, current_user.id)
+
+        if request.method == 'GET':
+            return jsonify({
+                'projection_method': league.projection_method or 'adaptive',
+                'flat_game_rate': league.flat_game_rate or 0.85,
+                'method_descriptions': {
+                    'adaptive': 'Uses tiered rates based on games played (90% for injured w/return, 85% for new players, 75% floor)',
+                    'flat_rate': 'Uses the same fixed percentage for all players'
+                }
+            }), 200
+
+        # PUT - Update settings
+        data = request.get_json() or {}
+
+        # Validate projection_method
+        projection_method = data.get('projection_method', 'adaptive')
+        if projection_method not in ('adaptive', 'flat_rate'):
+            return jsonify({
+                'error': 'Invalid projection_method. Must be "adaptive" or "flat_rate"'
+            }), 400
+
+        # Validate flat_game_rate
+        flat_game_rate = data.get('flat_game_rate', 0.85)
+        try:
+            flat_game_rate = float(flat_game_rate)
+            if not (0.50 <= flat_game_rate <= 1.00):
+                return jsonify({
+                    'error': 'flat_game_rate must be between 0.50 and 1.00'
+                }), 400
+        except (ValueError, TypeError):
+            return jsonify({
+                'error': 'flat_game_rate must be a valid number'
+            }), 400
+
+        # Update league settings
+        league.projection_method = projection_method
+        league.flat_game_rate = flat_game_rate
+        db.session.commit()
+
+        logger.info(f"Updated projection settings for league {league_id}: "
+                   f"method={projection_method}, flat_rate={flat_game_rate}")
+
+        return jsonify({
+            'success': True,
+            'projection_method': league.projection_method,
+            'flat_game_rate': league.flat_game_rate
+        }), 200
+
+    except LeagueNotFoundError:
+        return jsonify({'error': 'League not found'}), 404
+
+    except LeagueAccessDeniedError:
+        return jsonify({'error': 'Access denied'}), 403
+
+    except Exception as e:
+        logger.error(f"Error updating projection settings: {e}")
+        return jsonify({'error': 'Failed to update projection settings'}), 500

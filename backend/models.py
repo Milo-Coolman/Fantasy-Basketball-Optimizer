@@ -141,6 +141,12 @@ class League(db.Model):
     )
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    # Game projection settings
+    # 'adaptive': Uses tiered game_rate based on games played (default)
+    # 'flat_rate': Uses a fixed percentage for all players
+    projection_method = db.Column(db.String(20), default='adaptive')
+    flat_game_rate = db.Column(db.Float, default=0.85)  # Used when projection_method='flat_rate'
+
     # Relationships
     teams = db.relationship(
         'Team',
@@ -201,7 +207,9 @@ class League(db.Model):
             'league_type': self.league_type,
             'num_teams': self.num_teams,
             'last_updated': self.last_updated.isoformat() if self.last_updated else None,
-            'created_at': self.created_at.isoformat() if self.created_at else None
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'projection_method': self.projection_method or 'adaptive',
+            'flat_game_rate': self.flat_game_rate or 0.85,
         }
         if include_settings:
             data['roster_settings'] = self.roster_settings

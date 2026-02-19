@@ -791,7 +791,9 @@ def calculate_projected_team_totals(
     hybrid_engine: Optional[Any] = None,
     simple_engine: Optional[Any] = None,
     league_id: Optional[int] = None,
-    season: Optional[int] = None
+    season: Optional[int] = None,
+    projection_method: str = 'adaptive',
+    flat_game_rate: float = 0.85
 ) -> Tuple[Dict[str, float], List[Dict]]:
     """
     Calculate REST-OF-SEASON projected totals for a team's roster.
@@ -814,6 +816,8 @@ def calculate_projected_team_totals(
         simple_engine: Optional simple projection engine instance
         league_id: Optional league ID for projections
         season: The season year (e.g., 2026) for dynamic stat access
+        projection_method: 'adaptive' or 'flat_rate' for game projections
+        flat_game_rate: Fixed rate when using flat_rate method (0.50-1.00)
 
     Returns:
         Tuple of (ros_totals dict, player_projections list)
@@ -861,7 +865,7 @@ def calculate_projected_team_totals(
 
         ros_totals = None
         games_projected = 0
-        projection_method = None
+        method_used = None  # Track which projection method was used (hybrid/simple/fallback)
 
         # Strategy 1: Try hybrid projection engine
         if hybrid_engine is not None:
@@ -888,11 +892,14 @@ def calculate_projected_team_totals(
                     injury_notes=player.get('injury_notes'),
                     expected_return_date=expected_return_date,
                     league_season=season,
+                    projection_method=projection_method,
+                    flat_game_rate=flat_game_rate,
                 )
 
                 ros_totals = projection.ros_totals
                 games_projected = projection.games_projected
-                projection_method = 'hybrid'
+                method_used = 'hybrid'
+                logger.info(f"[CALCULATE_TEAM] {player_name}: games_projected from hybrid={games_projected}")
 
                 # Log what ros_totals contains
                 if ros_totals:
@@ -919,7 +926,7 @@ def calculate_projected_team_totals(
                 )
                 ros_totals = simple_proj.ros_totals
                 games_projected = simple_proj.games_projected
-                projection_method = 'simple'
+                method_used = 'simple'
 
             except Exception as e:
                 logger.debug(f"      Simple projection failed for {player_name}: {e}")
@@ -965,12 +972,12 @@ def calculate_projected_team_totals(
                 else:
                     ros_totals[engine_stat] = value
 
-            projection_method = 'fallback'
+            method_used = 'fallback'
 
         # Log the ROS projection
         pts_ros = ros_totals.get('pts', 0)
         reb_ros = ros_totals.get('trb', 0)
-        logger.debug(f"      {player_name}: {projection_method}, GP_remaining={games_projected}, "
+        logger.debug(f"      {player_name}: {method_used}, GP_remaining={games_projected}, "
                     f"ROS: PTS={pts_ros:.0f}, REB={reb_ros:.0f}")
 
         # Save player projection details
@@ -978,7 +985,7 @@ def calculate_projected_team_totals(
             'name': player_name,
             'games_played': games_played,
             'games_projected': games_projected,
-            'method': projection_method,
+            'method': method_used,
             'injury_status': injury_status,
             'ros_totals': ros_totals.copy(),
         })
@@ -1111,6 +1118,8 @@ def apply_start_limits_to_projections(
             # Get per-game stats from projection (engine format)
             ros_stats = player_proj.get('ros_totals', {})
             projected_games = player_proj.get('games_projected', 0)
+            player_name_for_log = player_proj.get('name', player.get('name', 'Unknown'))
+            logger.info(f"[DASHBOARD->OPTIMIZER] {player_name_for_log}: projected_games={projected_games}")
 
             # Calculate per-game stats from ROS totals
             per_game_stats = {}
@@ -1152,6 +1161,7 @@ def apply_start_limits_to_projections(
                 'projected_games': projected_games,
                 'lineupSlotId': lineup_slot_id,
                 'injury_status': injury_status,
+                'injury_details': player.get('injury_details'),  # ESPN injury data with expected_return_date
                 'season_outlook': season_outlook,
                 'droppable': droppable,
             })
@@ -1433,21 +1443,34 @@ def calculate_projected_roto_standings(
                 ).first()
 
             if league_record:
+                # Extract projection settings from league record FIRST
+                projection_method = league_record.projection_method or 'adaptive'
+                flat_game_rate = league_record.flat_game_rate or 0.85
+                logger.info(f"  [OK] Projection settings: method={projection_method}, flat_rate={flat_game_rate}")
+
                 start_limit_optimizer = StartLimitOptimizer(
                     espn_s2=league_record.espn_s2_cookie,
                     swid=league_record.swid_cookie,
                     league_id=espn_client.league_id,
                     season=espn_client.year,
-                    verbose=True  # Enable verbose logging for debugging
+                    verbose=True,  # Enable verbose logging for debugging
+                    projection_method=projection_method,
+                    flat_game_rate=flat_game_rate,
                 )
-                logger.info("  [OK] Start limit optimizer initialized with IR handling enabled")
+                logger.info("  [OK] Start limit optimizer initialized with IR handling and projection settings")
             else:
                 logger.warning(f"  [FAIL] Could not find league record for espn_league_id={espn_client.league_id}")
+                projection_method = 'adaptive'
+                flat_game_rate = 0.85
         except Exception as e:
             logger.warning(f"  [FAIL] Start limit optimizer failed: {e}")
             logger.debug(traceback.format_exc())
+            projection_method = 'adaptive'
+            flat_game_rate = 0.85
     else:
         logger.info("  [WARN] Start limit optimizer not available - projections will not account for position limits")
+        projection_method = 'adaptive'
+        flat_game_rate = 0.85
 
     logger.info("")
 
@@ -1518,6 +1541,8 @@ def calculate_projected_roto_standings(
                 simple_engine=simple_engine,
                 league_id=None,
                 season=espn_client.year,
+                projection_method=projection_method,
+                flat_game_rate=flat_game_rate,
             )
 
             # Log individual player projections

@@ -6,6 +6,7 @@ import ProjectionsChart from './ProjectionsChart';
 import CategoryComparisonChart from './CategoryComparisonChart';
 import QuickInsights from './QuickInsights';
 import StartLimitsInfo from './StartLimitsInfo';
+import ProjectionSettings from './ProjectionSettings';
 
 /**
  * LeagueDashboard - Comprehensive league view with standings, projections, and insights
@@ -291,6 +292,14 @@ function LeagueDashboard() {
 
       {/* Error banner (non-blocking) */}
       {error && <div className="alert alert-error">{error}</div>}
+
+      {/* Projection Settings - Collapsible panel */}
+      <ProjectionSettings
+        leagueId={parseInt(leagueId)}
+        onSettingsChange={() => {
+          // Settings changed - user should refresh to see new projections
+        }}
+      />
 
       {/* User Team Highlight */}
       {user_team && (

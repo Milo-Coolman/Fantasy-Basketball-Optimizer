@@ -192,6 +192,26 @@ export const fetchStreamingRecommendations = async (leagueId, teamId) => {
 };
 
 // =============================================================================
+// Settings API Functions
+// =============================================================================
+
+/**
+ * Get projection settings for a league
+ */
+export const fetchProjectionSettings = async (leagueId) => {
+  const response = await api.get(`/leagues/${leagueId}/projection-settings`);
+  return response.data;
+};
+
+/**
+ * Update projection settings for a league
+ */
+export const updateProjectionSettings = async (leagueId, settings) => {
+  const response = await api.put(`/leagues/${leagueId}/projection-settings`, settings);
+  return response.data;
+};
+
+// =============================================================================
 // Health Check
 // =============================================================================
 

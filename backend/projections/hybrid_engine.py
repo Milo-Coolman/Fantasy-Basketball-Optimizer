@@ -307,6 +307,9 @@ class HybridProjection:
     projection_date: datetime = field(default_factory=datetime.now)
     league_id: Optional[int] = None
 
+    # Injury data (passed through from ESPN)
+    injury_details: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -331,6 +334,7 @@ class HybridProjection:
             'season_phase': self.season_phase,
             'projection_date': self.projection_date.isoformat(),
             'league_id': self.league_id,
+            'injury_details': self.injury_details,
         }
 
 
@@ -412,6 +416,7 @@ class HybridProjectionEngine:
         # Caches
         self._league_settings_cache: Dict[int, LeagueScoringSettings] = {}
         self._projection_cache: Dict[str, HybridProjection] = {}
+        self._nba_schedule = None  # Lazy-loaded NBA schedule
 
         # Log initialization status
         logger.info(f"HybridProjectionEngine initialized: ML={self.ml_model is not None}, "
@@ -469,6 +474,7 @@ class HybridProjectionEngine:
             statistical_weight=1.0,
             season_phase='simple_fallback',
             league_id=league_id,
+            injury_details=player_data.get('injury_details'),  # Pass through ESPN injury data
         )
 
     def _load_ml_models(self) -> None:
@@ -499,7 +505,9 @@ class HybridProjectionEngine:
         expected_return_date: Optional[date] = None,
         league_settings: Optional[LeagueScoringSettings] = None,
         force_weights: Optional[Dict[str, float]] = None,
-        league_season: Optional[int] = None
+        league_season: Optional[int] = None,
+        projection_method: str = 'adaptive',
+        flat_game_rate: float = 0.85
     ) -> HybridProjection:
         """
         Generate a comprehensive hybrid projection for a player.
@@ -527,6 +535,8 @@ class HybridProjectionEngine:
             league_settings: League scoring configuration
             force_weights: Override automatic weight calculation (legacy)
             league_season: The season year (e.g., 2026) for dynamic stat access
+            projection_method: 'adaptive' (tiered rates) or 'flat_rate' (fixed rate)
+            flat_game_rate: Fixed rate when projection_method='flat_rate' (0.50-1.00)
 
         Returns:
             HybridProjection with complete projection data
@@ -543,6 +553,7 @@ class HybridProjectionEngine:
 
         player_name = player_data.get('name', f'Player {player_id}')
         team = player_data.get('team', 'UNK')
+        nba_team = player_data.get('nba_team', team)  # Use nba_team if available, fallback to team
         position = player_data.get('position', 'N/A')
         games_played = player_data.get('games_played', 0)
 
@@ -561,6 +572,7 @@ class HybridProjectionEngine:
         # DEBUG: Check player_data structure before extraction
         # =================================================================
         logger.info(f"=== project_player() called for: {player_name} ===")
+        logger.info(f"[SETTINGS RECEIVED] projection_method={projection_method}, flat_game_rate={flat_game_rate}")
         logger.info(f"Player {player_name} - player_data type: {type(player_data).__name__}")
         logger.info(f"Player {player_name} - player_data keys: {list(player_data.keys()) if isinstance(player_data, dict) else 'NOT A DICT'}")
         logger.info(f"Player {player_name} - has 'stats' key: {'stats' in player_data if isinstance(player_data, dict) else False}")
@@ -642,6 +654,7 @@ class HybridProjectionEngine:
                     statistical_weight=0.0,
                     season_phase='no_data',
                     league_id=league_id,
+                    injury_details=player_data.get('injury_details'),  # Pass through ESPN injury data
                 )
 
         try:
@@ -710,11 +723,21 @@ class HybridProjectionEngine:
                 if expected_return_date is None:
                     expected_return_date = player_data.get('injury_date')
 
+                # Get player_schedule from player_data if available
+                player_schedule = player_data.get('player_schedule')
+
                 games_projected = self._estimate_player_games(
                     games_played, games_remaining, injury_status, injury_notes,
                     expected_return_date=expected_return_date,
-                    player_name=player_name
+                    player_name=player_name,
+                    nba_team=nba_team,
+                    player_schedule=player_schedule,
+                    projection_method=projection_method,
+                    flat_game_rate=flat_game_rate
                 )
+
+            # Log the final projected_games value
+            logger.info(f"[HYBRID OUTPUT] {player_name}: projected_games={games_projected}")
 
             # Calculate ROS totals
             ros_totals = self._calculate_ros_totals(adjusted_stats, games_projected)
@@ -766,7 +789,8 @@ class HybridProjectionEngine:
                 ml_weight=tiered_weights['ml'],
                 statistical_weight=tiered_weights['current_season'],
                 season_phase=weight_tier,  # Show which tier was used
-                league_id=league_id
+                league_id=league_id,
+                injury_details=injury_details,  # Pass through ESPN injury data
             )
 
             # Cache the projection
@@ -2030,22 +2054,156 @@ class HybridProjectionEngine:
 
         return None
 
+    def _get_nba_schedule(self):
+        """Lazy-load NBA schedule."""
+        if self._nba_schedule is None:
+            try:
+                from backend.scrapers.nba_schedule import NBASchedule
+                # Use current season (Oct-Apr spans two calendar years)
+                current_month = date.today().month
+                if current_month >= 10:  # Oct-Dec
+                    season = date.today().year + 1
+                else:  # Jan-Sep
+                    season = date.today().year
+                self._nba_schedule = NBASchedule(season=season)
+                logger.info(f"Loaded NBA schedule for {season} season")
+            except Exception as e:
+                logger.warning(f"Could not load NBA schedule: {e}")
+                self._nba_schedule = None
+        return self._nba_schedule
+
+    def _get_team_schedule_dates(
+        self,
+        nba_team: str,
+        player_schedule: Optional[set] = None
+    ) -> Optional[List[date]]:
+        """
+        Get the full schedule for a team as a sorted list of dates.
+
+        Uses player_schedule if provided, otherwise fetches from NBASchedule.
+
+        Args:
+            nba_team: NBA team abbreviation (e.g., 'BOS', 'LAL')
+            player_schedule: Optional pre-computed set of game dates
+
+        Returns:
+            Sorted list of game dates, or None if unavailable
+        """
+        if player_schedule:
+            return sorted(player_schedule)
+
+        if not nba_team:
+            return None
+
+        schedule = self._get_nba_schedule()
+        if schedule:
+            try:
+                all_games = schedule.get_team_schedule(nba_team)
+                return sorted(all_games) if all_games else None
+            except Exception as e:
+                logger.debug(f"Could not get schedule for {nba_team}: {e}")
+
+        return None
+
+    def _count_team_games_played(
+        self,
+        nba_team: str,
+        player_schedule: Optional[set] = None
+    ) -> int:
+        """
+        Count team games that have already been played (before today).
+
+        Args:
+            nba_team: NBA team abbreviation
+            player_schedule: Optional pre-computed set of game dates
+
+        Returns:
+            Number of games played so far
+        """
+        schedule_dates = self._get_team_schedule_dates(nba_team, player_schedule)
+        if not schedule_dates:
+            # Fallback: estimate based on season progress
+            progress = self._get_season_progress()
+            return int(NBA_SEASON_GAMES * progress)
+
+        today = date.today()
+        return len([d for d in schedule_dates if d < today])
+
+    def _count_team_games_remaining(
+        self,
+        nba_team: str,
+        player_schedule: Optional[set] = None
+    ) -> int:
+        """
+        Count team games remaining (from today onwards).
+
+        Args:
+            nba_team: NBA team abbreviation
+            player_schedule: Optional pre-computed set of game dates
+
+        Returns:
+            Number of games remaining
+        """
+        schedule_dates = self._get_team_schedule_dates(nba_team, player_schedule)
+        if not schedule_dates:
+            # Fallback: use existing estimate
+            return self._estimate_games_remaining()
+
+        today = date.today()
+        return len([d for d in schedule_dates if d >= today])
+
+    def _count_team_games_after_date(
+        self,
+        nba_team: str,
+        after_date: date,
+        player_schedule: Optional[set] = None
+    ) -> int:
+        """
+        Count team games from a specific date onwards.
+
+        Args:
+            nba_team: NBA team abbreviation
+            after_date: Date from which to start counting (inclusive)
+            player_schedule: Optional pre-computed set of game dates
+
+        Returns:
+            Number of games from after_date onwards
+        """
+        schedule_dates = self._get_team_schedule_dates(nba_team, player_schedule)
+        if not schedule_dates:
+            # Fallback: estimate based on days remaining
+            today = date.today()
+            season_end = date(today.year if today.month <= 4 else today.year + 1, 4, 13)
+            days_from_date = (season_end - after_date).days
+            total_days = (season_end - today).days
+            if total_days <= 0:
+                return 0
+            games_remaining = self._estimate_games_remaining()
+            return int(games_remaining * (days_from_date / total_days))
+
+        return len([d for d in schedule_dates if d >= after_date])
+
     def _estimate_games_until_return(
         self,
         return_date: Optional[date],
-        games_remaining: int
+        games_remaining: int,
+        nba_team: str = None,
+        player_name: str = "Unknown"
     ) -> int:
         """
-        Estimate games missed until return date.
+        Count actual games missed until return date using NBA schedule.
 
-        Uses approximate NBA schedule (~3.5 games per week per team).
+        Uses actual team schedule to count games between today and return_date,
+        not calendar day approximations.
 
         Args:
             return_date: Expected return date
             games_remaining: Total games remaining in season
+            nba_team: Player's NBA team abbreviation (e.g., 'NOP', 'MEM')
+            player_name: Player name for logging
 
         Returns:
-            Estimated games missed
+            Actual games missed
         """
         if return_date is None:
             return games_remaining  # Season-ending
@@ -2054,11 +2212,29 @@ class HybridProjectionEngine:
         if return_date <= today:
             return 0  # Already back or returning today
 
-        days_until_return = (return_date - today).days
+        # Try to use actual schedule data
+        if nba_team:
+            schedule = self._get_nba_schedule()
+            if schedule:
+                try:
+                    # Get remaining games from today
+                    remaining_games = schedule.get_team_remaining_games(nba_team, today)
+                    # Count games BEFORE return_date (player is available ON return_date)
+                    # e.g., if return_date = Feb 20, count games from today through Feb 19
+                    games_missed = len([g for g in remaining_games if g < return_date])
 
-        # NBA teams play ~3.5 games per week on average
-        # That's ~0.5 games per day
-        games_missed = int(days_until_return * 0.5)
+                    # Calculate day before return for clearer logging
+                    day_before_return = return_date - timedelta(days=1)
+                    logger.info(f"Player {player_name} ({nba_team}): missing {games_missed} actual games "
+                               f"({today} through {day_before_return}), available starting {return_date}")
+                    return min(games_missed, games_remaining)
+                except Exception as e:
+                    logger.debug(f"Could not get schedule for {nba_team}: {e}")
+
+        # Fallback: approximate if no schedule data
+        days_until_return = (return_date - today).days
+        games_missed = int(days_until_return * 0.5)  # ~3.5 games/week = 0.5 games/day
+        logger.debug(f"Player {player_name}: using estimated {games_missed} games missed (no schedule data)")
 
         return min(games_missed, games_remaining)
 
@@ -2070,52 +2246,91 @@ class HybridProjectionEngine:
         injury_notes: Optional[str] = None,
         games_until_return: Optional[int] = None,
         expected_return_date: Optional[date] = None,
-        player_name: str = "Unknown"
+        player_name: str = "Unknown",
+        nba_team: str = None,
+        player_schedule: Optional[set] = None,
+        projection_method: str = 'adaptive',
+        flat_game_rate: float = 0.85
     ) -> int:
         """
         Estimate how many more games a player will play.
 
-        Uses expected return date from ESPN when available, falls back to
-        parsing injury notes, then heuristics based on injury status.
+        Uses actual NBA schedule data when available to calculate game rates
+        and games after return. Supports two projection methods:
+        - 'adaptive': 0-4 GP uses 90% rate, 5+ GP uses actual rate (min 75%)
+        - 'flat_rate': Uses fixed percentage for all players
 
         Args:
             games_played: Games played so far
-            games_remaining: Team games remaining
+            games_remaining: Team games remaining (fallback if no schedule)
             injury_status: Current injury status
             injury_notes: Injury notes/comments that may contain return info
             games_until_return: Optional override for expected games missed
             expected_return_date: ESPN's expected return date for injured players
             player_name: Player name for logging
+            nba_team: Player's NBA team abbreviation for schedule lookup
+            player_schedule: Optional pre-computed set of game dates for player's team
+            projection_method: 'adaptive' (tiered rates) or 'flat_rate' (fixed rate)
+            flat_game_rate: Fixed rate to use when projection_method='flat_rate' (0.50-1.00)
 
         Returns:
             Estimated games to play
         """
+        # Handle None values - default to adaptive if not specified
+        if projection_method is None:
+            projection_method = 'adaptive'
+        if flat_game_rate is None:
+            flat_game_rate = 0.85
+
+        # Log projection settings being used (INFO level for visibility)
+        logger.info(f"[PROJECTION SETTINGS] {player_name}: method={projection_method}, flat_rate={flat_game_rate:.1%}")
+
         injury_status_str = str(injury_status).upper() if injury_status else 'ACTIVE'
         today = date.today()
 
-        # Calculate player's game rate based on season so far
-        progress = self._get_season_progress()
-        if progress > 0:
-            expected_games = int(NBA_SEASON_GAMES * progress)
-            if expected_games > 0:
-                game_rate = min(1.0, games_played / expected_games)
-            else:
-                game_rate = 1.0
-        else:
-            game_rate = 1.0
+        # Get actual team games from schedule
+        team_games_so_far = self._count_team_games_played(nba_team, player_schedule)
+        team_games_remaining = self._count_team_games_remaining(nba_team, player_schedule)
 
-        # Baseline projection without injury
-        baseline_games = int(games_remaining * game_rate)
+        # Calculate game_rate based on projection method
+        if projection_method == 'flat_rate':
+            # User-configured flat rate for all players
+            game_rate = max(0.50, min(1.0, flat_game_rate))
+            logger.info(f"Player {player_name}: {games_played}/{team_games_so_far} games played, "
+                       f"rate={game_rate:.1%} (flat_rate mode)")
+        else:
+            # Adaptive mode: tiered rates based on games played
+            if games_played < 5:
+                # 0-4 games: Use default 90% rate (grace period for new/returning players)
+                game_rate = 0.9
+                logger.info(f"Player {player_name}: {games_played}/{team_games_so_far} games played, "
+                           f"rate=90.0% (< 5 GP grace period)")
+            else:
+                # 5+ games: Use actual rate with 75% floor
+                if team_games_so_far > 0:
+                    calculated_rate = games_played / team_games_so_far
+                    game_rate = max(0.75, min(1.0, calculated_rate))
+                else:
+                    game_rate = 0.9  # Fallback if no team games data
+                logger.info(f"Player {player_name}: {games_played}/{team_games_so_far} games played, "
+                           f"rate={game_rate:.1%}")
+
+        # Baseline projection without injury consideration
+        baseline_games = int(team_games_remaining * game_rate)
 
         # If explicit games until return provided, use that
         if games_until_return is not None:
-            return max(0, baseline_games - games_until_return)
+            projected = max(0, baseline_games - games_until_return)
+            logger.info(f"Player {player_name}: explicit games_until_return={games_until_return}, "
+                       f"projected {projected} games")
+            return projected
 
         # DTD (day-to-day) players: assume they return next game (minimal reduction)
         if injury_status_str in ['DAY_TO_DAY', 'DAY', 'GTD', 'QUESTIONABLE', 'PROBABLE']:
             games_missed = 1 if injury_status_str in ['DAY_TO_DAY', 'DAY', 'GTD', 'QUESTIONABLE'] else 0
-            logger.info(f"Player {player_name} {injury_status_str} - projecting {baseline_games - games_missed} games (minor reduction)")
-            return max(0, baseline_games - games_missed)
+            projected = max(0, baseline_games - games_missed)
+            logger.info(f"Player {player_name} {injury_status_str} - projecting {projected} games (minor reduction)")
+            return projected
 
         # Check for expected_return_date from ESPN (highest priority for OUT/IR players)
         return_date = None
@@ -2133,50 +2348,62 @@ class HybridProjectionEngine:
         if return_date is None:
             return_date = self._parse_return_date_from_notes(injury_notes, injury_status)
 
-        # Calculate games based on return date
+        # Calculate games based on return date using actual schedule
         if return_date:
             if return_date <= today:
-                # Already returned or returning today
-                games_missed = 0
-                logger.info(f"Player {player_name} return date {return_date} is today or past - projecting full games")
+                # Already returned or returning today - full games at game_rate
+                projected = int(team_games_remaining * game_rate)
+                logger.info(f"Player {player_name} return date {return_date} is today or past - "
+                           f"projecting {projected} games")
+                return max(0, projected)
             else:
-                games_missed = self._estimate_games_until_return(return_date, games_remaining)
-                games_after_return = max(0, baseline_games - games_missed)
-                logger.info(f"Player {player_name} OUT until {return_date} - projecting {games_after_return} games (missing {games_missed})")
+                # Player returns in the future - count actual games after return
+                team_games_after_return = self._count_team_games_after_date(
+                    nba_team, return_date, player_schedule
+                )
+                games_missed = team_games_remaining - team_games_after_return
+                projected = int(team_games_after_return * game_rate)
+
+                logger.info(f"Player {player_name} returns {return_date}, "
+                           f"will miss {games_missed}, projected {projected} games after return")
+
+                return max(0, projected)
         else:
             # No return date available - use heuristics
-            # OUT with no return date: check if it's likely season-ending
+            games_missed = 0
+
             if injury_status_str in ['OUT', 'O']:
                 # Check injury notes for season-ending indicators
                 notes_lower = (injury_notes or '').lower()
                 if any(x in notes_lower for x in ['season', 'acl', 'achilles', 'surgery']):
                     # Likely season-ending
-                    games_missed = games_remaining
                     logger.info(f"Player {player_name} OUT (likely season-ending) - projecting 0 games")
+                    return 0
                 else:
                     # Generic OUT without return date - assume extended absence
-                    games_missed = min(games_remaining, int(games_remaining * 0.5))  # Assume misses ~50% of remaining
-                    logger.info(f"Player {player_name} OUT (no return date) - projecting {baseline_games - games_missed} games (conservative)")
+                    games_missed = min(team_games_remaining, int(team_games_remaining * 0.5))
+                    projected = int((team_games_remaining - games_missed) * game_rate)
+                    logger.info(f"Player {player_name} OUT (no return date) - "
+                               f"projecting {projected} games (conservative)")
             elif injury_status_str in ['INJ_RESERVE', 'INJURED_RESERVE', 'IR']:
                 # IR without return date = season-ending
-                games_missed = games_remaining
                 logger.info(f"Player {player_name} IR (no return date) - projecting 0 games (season-ending)")
+                return 0
             else:
-                # Other statuses
+                # Other statuses (ACTIVE, SUSPENSION, etc.)
                 injury_games_missed = {
                     'ACTIVE': 0,
                     'SUSPENSION': 5,
                 }
                 games_missed = injury_games_missed.get(injury_status_str, 2)
+                projected = int((team_games_remaining - games_missed) * game_rate)
 
-        # Apply injury risk factor for non-healthy players
-        if injury_status_str not in ['ACTIVE', 'PROBABLE']:
-            injury_risk_factor = 0.95  # 5% additional games missed risk
-        else:
-            injury_risk_factor = 1.0
+            # Apply injury risk factor for non-healthy players
+            if injury_status_str not in ['ACTIVE', 'PROBABLE']:
+                injury_risk_factor = 0.95
+                projected = int(projected * injury_risk_factor)
 
-        projected = int((baseline_games - games_missed) * injury_risk_factor)
-        return max(0, projected)
+            return max(0, projected)
 
     def _calculate_ros_totals(
         self,
