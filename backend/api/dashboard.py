@@ -1076,7 +1076,8 @@ def apply_start_limits_to_projections(
     player_projections: List[Dict],
     categories: List[Dict],
     start_limit_optimizer: Any,
-    include_ir_returns: bool = True
+    include_ir_returns: bool = True,
+    all_optimizer_rosters: Optional[Dict[int, List[Dict]]] = None
 ) -> Tuple[Dict[str, float], List[Dict], Dict[str, Any]]:
     """
     Apply position start limits to adjust rest-of-season projections using day-by-day simulation.
@@ -1097,6 +1098,9 @@ def apply_start_limits_to_projections(
         categories: Scoring categories
         start_limit_optimizer: Initialized StartLimitOptimizer instance
         include_ir_returns: Whether to simulate IR player returns
+        all_optimizer_rosters: Optional dict of team_id -> optimizer roster for all teams.
+                               If provided, calculates league-wide z-score averages for
+                               fair player value comparison across the league.
 
     Returns:
         Tuple of (adjusted_ros_totals, adjusted_player_projections, start_limit_info)
@@ -1179,7 +1183,8 @@ def apply_start_limits_to_projections(
             team_name=team_name,
             roster=optimizer_roster,
             categories=categories,
-            include_ir_returns=include_ir_returns
+            include_ir_returns=include_ir_returns,
+            all_rosters=all_optimizer_rosters  # For z-score league average calculation
         )
 
         # Fetch actual starts used from ESPN for position limits display
@@ -1495,6 +1500,74 @@ def calculate_projected_roto_standings(
     logger.info("")
 
     # =========================================================================
+    # STEP 2.5: Pre-build optimizer rosters for z-score league average calculation
+    # =========================================================================
+    all_optimizer_rosters = None
+    if start_limit_optimizer is not None:
+        logger.info("STEP 2.5: BUILDING ALL OPTIMIZER ROSTERS FOR Z-SCORE CALCULATION")
+        logger.info("-" * 60)
+        logger.info("Pre-calculating per-game stats for all players across all teams...")
+
+        # Import stat ID mapping for ESPN stat conversion
+        try:
+            from backend.projections.start_limit_optimizer import ESPN_STAT_ID_MAP
+        except ImportError:
+            logger.warning("  Could not import ESPN_STAT_ID_MAP, using inline mapping")
+            ESPN_STAT_ID_MAP = {
+                0: 'pts', 1: 'blk', 2: 'stl', 3: 'ast',
+                6: 'reb', 11: 'to', 13: 'fgm', 14: 'fga',
+                15: 'ftm', 16: 'fta', 17: '3pm',
+                19: 'fg_pct', 20: 'ft_pct',
+            }
+
+        all_optimizer_rosters = {}
+        total_optimizer_players = 0
+
+        for team in teams:
+            team_id = team['espn_team_id']
+            roster = all_rosters.get(team_id, [])
+
+            # Build optimizer roster format with projected stats
+            team_optimizer_roster = []
+            for player in roster:
+                # Get per-game stats from ESPN data
+                stats = player.get('stats', {})
+                current = stats.get('current_season', {})
+                player_projected = stats.get('projected', {})
+                current_avg = current.get('average', {})
+                projected_avg = player_projected.get('average', {})
+
+                # Use current season average if available, else projection
+                per_game_stats = {}
+                source_stats = current_avg if current_avg else projected_avg
+                for stat_id_str, val in source_stats.items():
+                    try:
+                        stat_id = int(stat_id_str)
+                        stat_key = ESPN_STAT_ID_MAP.get(stat_id)
+                        if stat_key:
+                            per_game_stats[stat_key] = float(val)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Estimate projected games for this player
+                projected_games = player.get('projected_games', 30)  # Default estimate
+
+                team_optimizer_roster.append({
+                    'player_id': player.get('espn_player_id'),
+                    'name': player.get('name', 'Unknown'),
+                    'per_game_stats': per_game_stats,
+                    'projected_stats': per_game_stats,  # Same as per-game for this step
+                    'projected_games': projected_games,
+                })
+                total_optimizer_players += 1
+
+            if team_optimizer_roster:
+                all_optimizer_rosters[team_id] = team_optimizer_roster
+
+        logger.info(f"  Built optimizer rosters for {len(all_optimizer_rosters)} teams ({total_optimizer_players} players)")
+        logger.info("")
+
+    # =========================================================================
     # STEP 3: Calculate projected team totals for EACH team
     # =========================================================================
     logger.info("STEP 3: CALCULATING PROJECTED TEAM TOTALS FOR ALL TEAMS")
@@ -1569,7 +1642,8 @@ def calculate_projected_roto_standings(
                     player_projections=player_projections,
                     categories=categories,
                     start_limit_optimizer=start_limit_optimizer,
-                    include_ir_returns=True  # Enable IR return projections
+                    include_ir_returns=True,  # Enable IR return projections
+                    all_optimizer_rosters=all_optimizer_rosters  # For z-score league averages
                 )
 
                 if start_limit_info.get('available'):
@@ -2617,9 +2691,6 @@ def get_dashboard(league_id: int):
                     user_start_limits = user_proj['start_limits']
                     start_limits_summary['position_limits'] = user_start_limits.get('position_limits', {})
                     start_limits_summary['starts_used'] = user_start_limits.get('starts_used', {})
-                    logger.info(f"  [ISSUE 3] Copied starts_used to response: {start_limits_summary['starts_used']}")
-                else:
-                    logger.warning(f"  [ISSUE 3] Could not find start_limits for user team!")
                     start_limits_summary['starting_players'] = user_start_limits.get('starting_players', 0)
                     start_limits_summary['benched_players'] = user_start_limits.get('benched_players', 0)
                     start_limits_summary['dropped_players'] = user_start_limits.get('dropped_players', 0)
@@ -2627,6 +2698,9 @@ def get_dashboard(league_id: int):
                     start_limits_summary['ir_players'] = user_start_limits.get('ir_players', [])
                     start_limits_summary['adjustment_summary'] = user_start_limits.get('adjustment_summary', {})
                     start_limits_summary['player_assignments'] = user_start_limits.get('player_assignments', [])
+                    logger.info(f"  [ISSUE 3] Copied starts_used to response: {start_limits_summary['starts_used']}")
+                else:
+                    logger.warning(f"  [ISSUE 3] Could not find start_limits for user team!")
 
             dashboard_data = {
                 'league': {

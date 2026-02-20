@@ -225,6 +225,7 @@ class StartLimitOptimizer:
         self._lineup_slot_stat_limits: Optional[Dict[int, int]] = None
         self._nba_schedule: Optional[Any] = None
         self._starts_used_cache: Optional[Dict[int, Dict[int, int]]] = None  # team_id -> slot_id -> starts
+        self._league_averages: Optional[Dict[str, Dict[str, float]]] = None  # stat_key -> {mean, std}
 
         if self.verbose:
             logger.setLevel(logging.DEBUG)
@@ -841,10 +842,10 @@ class StartLimitOptimizer:
             if will_return:
                 if projected_return:
                     self._log(f"IR: {player_name} - IR return {projected_return}, "
-                             f"games={games_after_return}, value={per_game_value:.1f}")
+                             f"games={games_after_return}, z-value={per_game_value:+.2f}/game")
                 else:
                     self._log(f"IR: {player_name} - No return date, "
-                             f"games={games_after_return}, value={per_game_value:.1f} (available now)")
+                             f"games={games_after_return}, z-value={per_game_value:+.2f}/game (available now)")
             else:
                 self._log(f"IR: {player_name} - will NOT return before season end")
 
@@ -854,115 +855,41 @@ class StartLimitOptimizer:
         self,
         roster: List[Dict],
         ir_player: IRPlayerInfo,
-        initial_starts_used: Dict[int, int],
+        initial_starts_used: Dict[int, int] = None,
         exclude_player_ids: Optional[Set[int]] = None,
         my_team_id: Optional[int] = None,
         categories: Optional[List[Dict]] = None
-    ) -> Tuple[Optional[Dict], List[RotoDropScenario]]:
+    ) -> Tuple[Optional[Dict], List[Dict]]:
         """
-        Find the optimal player to drop for an IR return using END-OF-SEASON Roto optimization.
+        Find the lowest z-score value player to drop for an IR return.
 
-        This method optimizes for final Roto standings by:
-        1. Fetching the league's actual scoring categories from ESPN
-        2. Fetching all teams' current season stats (already accumulated)
-        3. For each potential drop candidate:
-           a) Remove that player, add the IR player
-           b) Run day-by-day optimizer for REST of season with new roster
-           c) Calculate END-OF-SEASON totals = current stats + rest-of-season projections
-           d) For percentage stats, calculate from total FGM/FGA, FTM/FTA
-           e) Rank all teams in each category
-           f) Convert ranks to Roto points (1st=N, 2nd=N-1, etc for N-team league)
-           g) Sum total Roto points
-        4. Drop the player whose removal results in HIGHEST end-of-season Roto points
+        SIMPLIFIED APPROACH: Instead of complex Roto simulations, simply drop
+        the player with the lowest per-game z-score value. This is fast and
+        still optimal because z-scores already capture relative value.
 
         Args:
             roster: List of player dicts for MY team
             ir_player: The IR player who is returning
-            initial_starts_used: Current starts used per position from ESPN
+            initial_starts_used: (unused, kept for compatibility)
             exclude_player_ids: Player IDs to exclude from consideration
-            my_team_id: My ESPN team ID (for fetching league-wide stats)
-            categories: List of category dicts for scoring (if None, fetches from ESPN)
+            my_team_id: (unused, kept for compatibility)
+            categories: (unused, kept for compatibility)
 
         Returns:
-            Tuple of (best player dict to drop, list of all scenario analyses)
+            Tuple of (best player dict to drop, list of all candidates sorted by z-value)
         """
         if exclude_player_ids is None:
             exclude_player_ids = set()
 
-        # Fetch actual scoring categories from ESPN if not provided
-        if categories is None:
-            categories = self.fetch_scoring_categories()
-
         self._log("\n" + "=" * 70)
-        self._log(f"ROTO STANDINGS OPTIMIZATION FOR {ir_player.player_name} RETURN")
+        self._log(f"IR DROP ANALYSIS: {ir_player.player_name} RETURNING")
         self._log("=" * 70)
 
-        # Show categories being used
-        cat_names = [c.get('stat_key', '').upper() for c in categories]
-        self._log(f"  Scoring Categories ({len(categories)}): {', '.join(cat_names)}")
-
-        # Get season dates and position limits
-        start_date, end_date = self.get_season_dates()
-
-        # Use IR player's return date as simulation start if later than today
-        sim_start = ir_player.projected_return_date if ir_player.projected_return_date else start_date
-        if sim_start < start_date:
-            sim_start = start_date
-
-        stat_limits = self.get_lineup_slot_stat_limits()
-
-        # Build category info for analysis
-        category_info = []
-        for cat in categories:
-            stat_key = cat.get('stat_key', '').lower()
-            category_info.append({
-                'stat_key': stat_key,
-                'name': cat.get('name', stat_key.upper()),
-                'is_reverse': cat.get('is_reverse', stat_key in REVERSE_CATEGORIES),
-                'is_percentage': cat.get('is_percentage', stat_key in PERCENTAGE_CATEGORIES),
-            })
-
-        # Extract category keys for simulation (include component stats for percentages)
-        category_keys = [c['stat_key'] for c in category_info]
-
-        # Add component stats needed for percentage calculations
-        component_stats = set()
-        for cat in category_info:
-            if cat['is_percentage'] and cat['stat_key'] in PERCENTAGE_COMPONENTS:
-                made, attempts = PERCENTAGE_COMPONENTS[cat['stat_key']]
-                component_stats.add(made)
-                component_stats.add(attempts)
-
-        # All stats we need to track (categories + components)
-        all_stat_keys = list(set(category_keys) | component_stats)
-
-        # Fetch all teams' current season stats from ESPN
-        self._log("\n  Fetching league-wide current season stats...")
-        all_teams_current_stats = self._fetch_all_teams_current_stats(my_team_id, all_stat_keys)
-        num_teams = len(all_teams_current_stats)
-        self._log(f"  Found {num_teams} teams in league")
-        self._log(f"  Max possible Roto points: {num_teams * len(category_keys)}")
-
-        # Get my team's current stats
-        my_current_stats = all_teams_current_stats.get(my_team_id, {})
-
-        # Fetch all teams' rosters for proper projections
-        self._log("\n  Fetching rosters for all teams...")
-        all_teams_rosters = self._fetch_all_teams_rosters()
-        self._log(f"  Fetched rosters for {len(all_teams_rosters)} teams")
-
-        # Calculate projected EOS totals for ALL teams BEFORE analyzing drop scenarios
-        # This ensures fair comparison: your_projected vs other_teams_projected
-        all_teams_baseline_eos = self._calculate_all_teams_eos_projections(
-            all_teams_rosters=all_teams_rosters,
-            all_teams_current_stats=all_teams_current_stats,
-            sim_start=sim_start,
-            end_date=end_date,
-            stat_limits=stat_limits,
-            all_stat_keys=all_stat_keys,
-            category_info=category_info,
-            my_team_id=my_team_id
-        )
+        ir_value = ir_player.per_game_value
+        ir_games = ir_player.games_after_return
+        return_str = f"returning {ir_player.projected_return_date}" if ir_player.projected_return_date else "available now"
+        self._log(f"  IR Player: {ir_player.player_name} ({return_str})")
+        self._log(f"  IR z-value: {ir_value:+.2f}/game, projected games: {ir_games}")
 
         # Get active droppable players
         candidates = []
@@ -973,98 +900,52 @@ class StartLimitOptimizer:
             # Only consider active roster (slots 0-12, not IR)
             if slot_id <= 12 and player_id not in exclude_player_ids:
                 if player.get('droppable', True):
-                    candidates.append(player)
+                    # Get z-value (try multiple keys)
+                    z_value = player.get('per_game_value', 0) or player.get('z_value', 0)
+                    candidates.append({
+                        **player,
+                        'z_value': z_value
+                    })
 
         if not candidates:
             self._log("  No droppable candidates found")
             return None, []
 
-        self._log(f"\n  Analyzing {len(candidates)} drop scenarios for Roto optimization...")
-        self._log(f"  Simulation period: {sim_start} to {end_date}")
+        # Sort by z-score value (LOWEST first = worst player = best to drop)
+        candidates.sort(key=lambda p: p.get('z_value', 0))
 
-        # Calculate IR player's per-game stats
-        ir_per_game = ir_player.per_game_stats or {}
-        return_str = f"returning {ir_player.projected_return_date}" if ir_player.projected_return_date else "available now"
-        self._log(f"  IR Player {ir_player.player_name}: {return_str}")
+        self._log(f"\n  Drop candidates sorted by z-score (lowest = best to drop):")
+        self._log("  " + "-" * 50)
+        for i, player in enumerate(candidates[:5]):  # Show top 5 worst
+            name = player.get('name', 'Unknown')
+            z_val = player.get('z_value', 0)
+            gain = ir_value - z_val
+            self._log(f"  {i+1}. {name}: z-value={z_val:+.2f}/game (gain: {gain:+.2f})")
 
-        # Analyze each drop scenario
-        scenarios: List[RotoDropScenario] = []
+        if len(candidates) > 5:
+            self._log(f"  ... and {len(candidates) - 5} more players")
 
-        for candidate in candidates:
-            scenario = self._analyze_roto_drop_scenario(
-                drop_candidate=candidate,
-                roster=roster,
-                ir_player=ir_player,
-                sim_start=sim_start,
-                end_date=end_date,
-                initial_starts_used=initial_starts_used,
-                stat_limits=stat_limits,
-                exclude_player_ids=exclude_player_ids,
-                my_team_id=my_team_id,
-                my_current_stats=my_current_stats,
-                all_teams_eos_projections=all_teams_baseline_eos,
-                category_info=category_info,
-                all_stat_keys=all_stat_keys,
-                num_teams=num_teams
-            )
-            scenarios.append(scenario)
+        # Select the worst player (lowest z-score)
+        worst_player = candidates[0]
+        worst_name = worst_player.get('name', 'Unknown')
+        worst_value = worst_player.get('z_value', 0)
+        value_gain = ir_value - worst_value
 
-        # Sort by projected Roto points (HIGHEST first = best scenario)
-        scenarios.sort(key=lambda s: s.projected_roto_points, reverse=True)
+        self._log(f"\n  {'='*50}")
+        self._log(f"  OPTIMAL DROP: {worst_name}")
+        self._log(f"  Drop z-value: {worst_value:+.2f}/game")
+        self._log(f"  IR z-value:   {ir_value:+.2f}/game")
+        self._log(f"  Net gain:     {value_gain:+.2f}/game")
+        if ir_games > 0:
+            total_gain = value_gain * ir_games
+            self._log(f"  Total gain:   {total_gain:+.1f} over {ir_games} games")
+        self._log(f"  {'='*50}")
 
-        # Log the analysis results
-        max_pts = num_teams * len(category_info)
-        best_pts = scenarios[0].projected_roto_points if scenarios else 0
-        worst_pts = scenarios[-1].projected_roto_points if scenarios else 0
-        pts_spread = best_pts - worst_pts
+        # Log the decision
+        self._log(f"\n  IR Drop Decision: Drop {worst_name} (z={worst_value:+.2f}) "
+                 f"to activate {ir_player.player_name} (z={ir_value:+.2f})")
 
-        self._log("\n  " + "-" * 70)
-        self._log("  DROP SCENARIO RANKINGS (comparing YOUR projected vs ALL TEAMS projected)")
-        self._log("  " + "-" * 70)
-        self._log(f"  Roto Points spread across scenarios: {pts_spread:.1f} pts difference")
-        self._log(f"  (Best: {best_pts:.1f}, Worst: {worst_pts:.1f}, Max possible: {max_pts})")
-
-        for i, s in enumerate(scenarios):
-            rank = i + 1
-            diff_from_best = s.projected_roto_points - best_pts
-            self._log(f"\n  {rank}. Drop {s.drop_player_name}")
-            self._log(f"     Projected Roto Points: {s.projected_roto_points:.1f} / {max_pts}")
-            if diff_from_best < 0:
-                self._log(f"     vs Best Option: {diff_from_best:.1f} pts")
-            self._log(f"     Projected Final Rank: #{s.projected_final_rank}")
-
-            # Show ALL category breakdown
-            cat_summary = []
-            for cat in category_info:
-                stat_key = cat['stat_key']
-                cat_rank = s.category_ranks.get(stat_key, 0)
-                cat_total = s.category_totals.get(stat_key, 0)
-                # Format percentage stats as percentages
-                if cat['is_percentage']:
-                    cat_summary.append(f"{stat_key.upper()}:{cat_total:.1%}(#{cat_rank})")
-                else:
-                    cat_summary.append(f"{stat_key.upper()}:{cat_total:.0f}(#{cat_rank})")
-            self._log(f"     Categories: {', '.join(cat_summary)}")
-            self._log(f"     Reason: {s.reason}")
-
-        # Select the best scenario (highest Roto points)
-        if scenarios:
-            best = scenarios[0]
-            second_best = scenarios[1] if len(scenarios) > 1 else None
-            self._log(f"\n  {'='*70}")
-            self._log(f"  OPTIMAL DROP: {best.drop_player_name}")
-            self._log(f"  Projected Final: {best.projected_roto_points:.1f} Roto pts, Rank #{best.projected_final_rank}")
-            if second_best:
-                margin = best.projected_roto_points - second_best.projected_roto_points
-                self._log(f"  Margin over next best: +{margin:.1f} pts vs dropping {second_best.drop_player_name}")
-            self._log(f"  {'='*70}")
-
-            # Find the player dict
-            for player in candidates:
-                if player.get('player_id') == best.drop_player_id:
-                    return player, scenarios
-
-        return None, scenarios
+        return worst_player, candidates
 
     def _fetch_all_teams_current_stats(
         self,
@@ -1845,34 +1726,267 @@ class StartLimitOptimizer:
             self._log(f"Error getting schedule for {nba_team}: {e}", "warning")
             return []
 
+    def calculate_league_averages(
+        self,
+        all_rosters: List[List[Dict]],
+        categories: Optional[List[Dict]] = None
+    ) -> Dict[str, Dict[str, float]]:
+        """
+        Calculate league-wide ROS per-game averages for z-score calculations.
+
+        Collects per-game stats from all rostered players across all teams
+        and calculates mean and standard deviation for each category.
+
+        Args:
+            all_rosters: List of team rosters, each roster is a list of player dicts
+                         Each player dict should have 'per_game_stats' key
+            categories: Optional list of category dicts from fetch_scoring_categories()
+                        If None, uses default categories
+
+        Returns:
+            Dict mapping stat_key -> {'mean': float, 'std': float}
+            Example: {'pts': {'mean': 15.0, 'std': 5.0}, 'reb': {'mean': 5.0, 'std': 2.0}, ...}
+        """
+        import statistics
+
+        # Map category names to stat keys
+        # Handles both uppercase (from categories) and lowercase (from stats)
+        CATEGORY_TO_STAT_KEY = {
+            'PTS': 'pts', 'pts': 'pts',
+            'REB': 'reb', 'reb': 'reb',
+            'AST': 'ast', 'ast': 'ast',
+            'STL': 'stl', 'stl': 'stl',
+            'BLK': 'blk', 'blk': 'blk',
+            '3PM': '3pm', '3pm': '3pm',
+            'TO': 'to', 'to': 'to',
+            'FG%': 'fg_pct', 'fg_pct': 'fg_pct',
+            'FT%': 'ft_pct', 'ft_pct': 'ft_pct',
+        }
+
+        # Determine which stat keys to calculate averages for
+        if categories:
+            stat_keys = set()
+            for cat in categories:
+                cat_name = cat.get('stat_key') or cat.get('name', '')
+                stat_key = CATEGORY_TO_STAT_KEY.get(cat_name, cat_name.lower())
+                if stat_key:
+                    stat_keys.add(stat_key)
+        else:
+            # Default categories for Roto
+            stat_keys = {'pts', 'reb', 'ast', 'stl', 'blk', '3pm', 'to', 'fg_pct', 'ft_pct'}
+
+        # Collect all player stats
+        stat_values: Dict[str, List[float]] = {key: [] for key in stat_keys}
+
+        player_count = 0
+        sample_logged = 0
+        logged_pct_conversions = set()  # Track which percentage stats we've logged
+        for roster in all_rosters:
+            for player in roster:
+                per_game_stats = player.get('per_game_stats', {})
+                if not per_game_stats:
+                    continue
+
+                player_count += 1
+                player_name = player.get('name', 'Unknown')
+
+                # Log first 3 players' per-game stats to verify data is correct
+                if sample_logged < 3:
+                    pts = per_game_stats.get('pts', per_game_stats.get('PTS', 0))
+                    reb = per_game_stats.get('reb', per_game_stats.get('REB', 0))
+                    ast = per_game_stats.get('ast', per_game_stats.get('AST', 0))
+                    self._log(f"[SAMPLE DATA] {player_name}: pts={pts:.1f}, reb={reb:.1f}, ast={ast:.1f}/game")
+                    sample_logged += 1
+
+                # Map stat keys to possible alternate keys in per_game_stats
+                STAT_KEY_ALTERNATES = {
+                    'fg_pct': ['fg_pct', 'FG%', 'FG_PCT', 'fgPct'],
+                    'ft_pct': ['ft_pct', 'FT%', 'FT_PCT', 'ftPct'],
+                    '3p_pct': ['3p_pct', '3P%', '3P_PCT', '3pPct'],
+                    'pts': ['pts', 'PTS'],
+                    'reb': ['reb', 'REB'],
+                    'ast': ['ast', 'AST'],
+                    'stl': ['stl', 'STL'],
+                    'blk': ['blk', 'BLK'],
+                    '3pm': ['3pm', '3PM', 'threePointMade'],
+                    'to': ['to', 'TO', 'turnovers'],
+                }
+
+                # Log keys from first player for debugging
+                if sample_logged == 1:
+                    self._log(f"[DEBUG] per_game_stats keys: {list(per_game_stats.keys())}")
+
+                for stat_key in stat_keys:
+                    # Try multiple key variations to find the value
+                    value = None
+                    alternate_keys = STAT_KEY_ALTERNATES.get(stat_key, [stat_key, stat_key.upper()])
+                    for alt_key in alternate_keys:
+                        if alt_key in per_game_stats and per_game_stats[alt_key] is not None:
+                            value = per_game_stats[alt_key]
+                            break
+
+                    if value is not None and value != 0:
+                        # Scale percentage stats (0.476 -> 47.6) so they're comparable to counting stats
+                        if stat_key in ['fg_pct', 'ft_pct', '3p_pct'] and value < 1.0 and value > 0:
+                            original_value = value
+                            value = value * 100
+                            # Log first percentage conversion for each stat
+                            if sample_logged <= 3 and stat_key not in logged_pct_conversions:
+                                self._log(f"[PCT SCALE] {stat_key}: {original_value:.4f} -> {value:.1f}")
+                                logged_pct_conversions.add(stat_key)
+                        stat_values[stat_key].append(float(value))
+
+        # Calculate mean and std for each category
+        league_averages = {}
+
+        self._log(f"\n{'='*60}")
+        self._log("LEAGUE-WIDE ROS PER-GAME AVERAGES (Z-Score Baseline)")
+        self._log(f"{'='*60}")
+        self._log(f"Players analyzed: {player_count}")
+
+        for stat_key in sorted(stat_keys):
+            values = stat_values[stat_key]
+
+            if len(values) >= 2:
+                mean = statistics.mean(values)
+                std = statistics.stdev(values)
+            elif len(values) == 1:
+                mean = values[0]
+                std = 0.01  # Avoid division by zero
+            else:
+                # No data - use reasonable defaults
+                mean = 0.0
+                std = 0.01
+
+            # Ensure std is never zero to avoid division errors
+            if std == 0:
+                std = 0.01
+
+            league_averages[stat_key] = {'mean': mean, 'std': std}
+            self._log(f"  {stat_key.upper():6s}: mean={mean:6.2f}, std={std:5.2f} (n={len(values)})")
+
+        self._log(f"{'='*60}\n")
+
+        # Cache the averages
+        self._league_averages = league_averages
+
+        return league_averages
+
+    def set_league_averages(self, league_averages: Dict[str, Dict[str, float]]) -> None:
+        """
+        Manually set league averages (useful when already calculated).
+
+        Args:
+            league_averages: Dict mapping stat_key -> {'mean': float, 'std': float}
+        """
+        self._league_averages = league_averages
+        self._log(f"League averages set manually for {len(league_averages)} categories")
+
     def calculate_player_value(
         self,
         per_game_stats: Dict[str, float],
-        categories: Optional[List[str]] = None
+        league_averages: Optional[Dict[str, Dict[str, float]]] = None,
+        log_details: bool = False,
+        player_name: Optional[str] = None
     ) -> float:
-        """Calculate a player's fantasy value from per-game stats."""
-        if categories is None:
-            categories = ['PTS', 'REB', 'AST', 'STL', 'BLK', '3PM']
+        """
+        Calculate a player's fantasy value using z-scores across all categories.
 
-        # Value weights (can be customized per league)
-        # Support both uppercase and lowercase stat keys
-        weights = {
-            'PTS': 1.0, 'pts': 1.0,
-            'REB': 1.2, 'reb': 1.2,
-            'AST': 1.5, 'ast': 1.5,
-            'STL': 2.5, 'stl': 2.5,
-            'BLK': 2.5, 'blk': 2.5,
-            '3PM': 1.0, '3pm': 1.0,
-            'TO': -1.5, 'to': -1.5,
+        When league_averages is available (from calculate_league_averages),
+        calculates value as the sum of z-scores: (player_stat - mean) / std.
+        This creates fair, league-specific values that account for category scarcity.
+
+        Args:
+            per_game_stats: Player's per-game projected stats
+            league_averages: Dict of stat_key -> {'mean': float, 'std': float}
+                            If None, uses cached self._league_averages
+            log_details: If True, log individual z-scores (useful for debugging)
+            player_name: Player name for logging (optional)
+
+        Returns:
+            Total z-score value (sum of z-scores across all categories)
+        """
+        # Use provided averages, cached averages, or None
+        averages = league_averages or self._league_averages
+
+        if averages is None:
+            # No league averages available - this shouldn't happen in normal use
+            # Fall back to a simple sum of key stats for basic ordering
+            self._log("WARNING: No league averages set, using fallback value calculation", "warning")
+            basic_stats = ['pts', 'reb', 'ast', 'stl', 'blk', '3pm']
+            value = sum(per_game_stats.get(s, 0) + per_game_stats.get(s.upper(), 0)
+                       for s in basic_stats)
+            return value
+
+        # Calculate z-scores for each category
+        total_value = 0.0
+        z_scores = {}
+
+        # Map stat keys to possible alternate keys in per_game_stats
+        STAT_KEY_ALTERNATES = {
+            'fg_pct': ['fg_pct', 'FG%', 'FG_PCT', 'fgPct'],
+            'ft_pct': ['ft_pct', 'FT%', 'FT_PCT', 'ftPct'],
+            '3p_pct': ['3p_pct', '3P%', '3P_PCT', '3pPct'],
+            'pts': ['pts', 'PTS'],
+            'reb': ['reb', 'REB'],
+            'ast': ['ast', 'AST'],
+            'stl': ['stl', 'STL'],
+            'blk': ['blk', 'BLK'],
+            '3pm': ['3pm', '3PM', 'threePointMade'],
+            'to': ['to', 'TO', 'turnovers'],
         }
 
-        value = 0.0
-        for stat, weight in weights.items():
-            stat_val = per_game_stats.get(stat, 0)
-            if stat_val:
-                value += stat_val * weight
+        # Log keys on first player for debugging
+        if log_details and player_name:
+            self._log(f"  {player_name} per_game_stats keys: {list(per_game_stats.keys())}")
 
-        return value
+        for stat_key, avg_data in averages.items():
+            mean = avg_data['mean']
+            std = avg_data['std']
+
+            # Try multiple key variations to find the value
+            player_stat = None
+            alternate_keys = STAT_KEY_ALTERNATES.get(stat_key, [stat_key, stat_key.upper()])
+            for alt_key in alternate_keys:
+                if alt_key in per_game_stats:
+                    player_stat = per_game_stats[alt_key]
+                    break
+
+            if player_stat is None:
+                player_stat = 0
+
+            # Scale percentage stats (0.476 -> 47.6) to match league averages scale
+            if stat_key in ['fg_pct', 'ft_pct', '3p_pct'] and player_stat is not None and player_stat < 1.0 and player_stat > 0:
+                original_stat = player_stat
+                player_stat = player_stat * 100
+                if log_details:
+                    self._log(f"    [PCT] {stat_key}: {original_stat:.4f} -> {player_stat:.1f} (mean={mean:.1f}, std={std:.2f})")
+
+            # Calculate z-score
+            if std > 0:
+                z_score = (player_stat - mean) / std
+            else:
+                z_score = 0.0
+
+            # For turnovers, flip the sign (lower is better)
+            if stat_key == 'to':
+                z_score = -z_score
+
+            z_scores[stat_key] = z_score
+            total_value += z_score
+
+        # Log detailed breakdown if requested
+        if log_details and player_name:
+            z_str = ", ".join(f"{k}={v:+.2f}" for k, v in sorted(z_scores.items()))
+            self._log(f"  {player_name}: z-scores: [{z_str}] = {total_value:+.2f}/game")
+
+        # Sanity check: z-score sum across ~9 categories should rarely exceed ±30
+        # If we see values like 100+, the per_game_stats are probably total stats, not per-game
+        if abs(total_value) > 50:
+            self._log(f"  WARNING: z-score {total_value:+.2f} seems too high for {player_name or 'unknown'}. "
+                     f"Check if per_game_stats contains total season stats instead of per-game stats.", "warning")
+
+        return total_value
 
     def expand_lineup_slots(self) -> List[Tuple[int, str]]:
         """
@@ -2199,7 +2313,7 @@ class StartLimitOptimizer:
                 })
 
                 self._log(f"  {player_name} ({nba_team}): INJURED, ESPN return={actual_return_date}, "
-                         f"projected_games={player_projected_games} (from hybrid engine), value={per_game_value:.1f}")
+                         f"projected_games={player_projected_games}, z-value={per_game_value:+.2f}/game")
                 continue
 
             # Regular active player - available for all remaining team games
@@ -2222,7 +2336,7 @@ class StartLimitOptimizer:
             active_player_ids.add(player_id)
 
             self._log(f"  {player_name} ({nba_team}): ACTIVE, {total_team_games} games remaining, "
-                     f"value={per_game_value:.1f}")
+                     f"z-value={per_game_value:+.2f}/game")
 
         # Pre-build IR player schedules and logs (they start with 0 games available until return)
         if include_ir_returns:
@@ -2492,7 +2606,8 @@ class StartLimitOptimizer:
         roster: List[Dict],
         categories: List[Dict],
         include_ir_returns: bool = False,
-        manual_return_dates: Optional[Dict[int, date]] = None
+        manual_return_dates: Optional[Dict[int, date]] = None,
+        all_rosters: Optional[Dict[int, List[Dict]]] = None
     ) -> Tuple[Dict[str, float], List[Dict], List[IRPlayerInfo]]:
         """
         Main entry point: Optimize projections using day-by-day simulation.
@@ -2504,6 +2619,9 @@ class StartLimitOptimizer:
             categories: List of scoring category dicts
             include_ir_returns: If True, simulate IR player returns
             manual_return_dates: Optional dict of player_id -> manually specified return date
+            all_rosters: Optional dict of team_id -> roster for calculating league-wide
+                        z-score averages. If provided on first call, calculates and caches
+                        league averages for fair player value comparison.
 
         Returns:
             Tuple of (adjusted_totals, player_assignments, ir_players)
@@ -2512,33 +2630,98 @@ class StartLimitOptimizer:
         self._log(f"OPTIMIZING: {team_name}")
         self._log(f"{'#'*60}")
 
+        # Calculate league averages if all_rosters provided and not yet cached
+        if all_rosters is not None and self._league_averages is None:
+            self._log("\nCalculating league-wide z-score averages from all team rosters...")
+            # Convert all_rosters to the format expected by calculate_league_averages
+            all_rosters_list = []
+            for tid, team_roster in all_rosters.items():
+                converted_roster = []
+                for player in team_roster:
+                    player_name = player.get('name', 'Unknown')
+
+                    # Check if per_game_stats already exists (dashboard.py pre-calculates this)
+                    if 'per_game_stats' in player and player['per_game_stats']:
+                        per_game_stats = {k.lower(): v for k, v in player['per_game_stats'].items()}
+                        # Log first player from first team to verify data is correct
+                        if len(all_rosters_list) == 0 and len(converted_roster) == 0:
+                            sample_pts = per_game_stats.get('pts', 0)
+                            self._log(f"[DATA CHECK] Using pre-computed per_game_stats: {player_name} pts={sample_pts:.1f}/game")
+                    else:
+                        # Fallback: Convert from projected_stats totals
+                        projected_stats = player.get('projected_stats', {})
+                        projected_games = player.get('projected_games', 1)
+                        per_game_stats = {}
+                        if projected_games > 0:
+                            for key, total in projected_stats.items():
+                                if key not in ['FG%', 'FT%', 'fg_pct', 'ft_pct']:
+                                    per_game_stats[key.lower()] = total / projected_games
+                                else:
+                                    per_game_stats[key.lower()] = total
+                        if len(all_rosters_list) == 0 and len(converted_roster) == 0:
+                            sample_pts = per_game_stats.get('pts', 0)
+                            self._log(f"[DATA CHECK] Computed per_game_stats from totals: {player_name} pts={sample_pts:.1f}/game (total={projected_stats.get('pts', projected_stats.get('PTS', 0)):.1f} / {projected_games} games)")
+
+                    converted_roster.append({'per_game_stats': per_game_stats, 'name': player_name})
+                all_rosters_list.append(converted_roster)
+
+            self.calculate_league_averages(all_rosters_list, categories)
+
         # Get season end date for IR processing
         _, season_end = self.get_season_dates()
 
         # Convert roster format for simulation
         sim_roster = []
-        for player in roster:
-            # Extract per-game stats from total projections
-            projected_stats = player.get('projected_stats', {})
+
+        # Log z-score details for first 3 players to show sample calculations
+        self._log("\nZ-SCORE VALUE CALCULATIONS (sample):")
+        self._log("-" * 50)
+
+        for idx, player in enumerate(roster):
             projected_games = player.get('projected_games', 1)
             player_name = player.get('name', 'Unknown')
-            self._log(f"[OPTIMIZER RECEIVED] {player_name}: projected_games={projected_games}")
+            # Always initialize projected_stats to avoid undefined variable error
+            projected_stats = player.get('projected_stats', {})
 
-            per_game_stats = {}
-            if projected_games > 0:
-                for key, total in projected_stats.items():
-                    if key not in ['FG%', 'FT%']:
-                        per_game_stats[key] = total / projected_games
-                    else:
-                        per_game_stats[key] = total
+            # Check if per_game_stats already exists (calculated in dashboard.py)
+            if 'per_game_stats' in player and player['per_game_stats']:
+                per_game_stats = player['per_game_stats']
+                if idx < 3:
+                    pts_pergame = per_game_stats.get('PTS', per_game_stats.get('pts', 0))
+                    self._log(f"[STATS CHECK] {player_name}: using existing per_game_stats, "
+                             f"games={projected_games}, per_game_PTS={pts_pergame:.1f}")
+            else:
+                # Fallback: Calculate per-game stats from projected_stats totals
+                per_game_stats = {}
+                if projected_games > 0:
+                    for key, total in projected_stats.items():
+                        if key not in ['FG%', 'FT%']:
+                            per_game_stats[key] = total / projected_games
+                        else:
+                            per_game_stats[key] = total
+
+                # Log first 3 players' stats to verify per-game calculation is correct
+                if idx < 3:
+                    pts_total = projected_stats.get('PTS', projected_stats.get('pts', 0))
+                    pts_pergame = per_game_stats.get('PTS', per_game_stats.get('pts', 0))
+                    self._log(f"[STATS CHECK] {player_name}: computed from totals, total_PTS={pts_total:.1f}, "
+                             f"games={projected_games}, per_game_PTS={pts_pergame:.1f}")
+
+            # Calculate z-score based value, log details for first 3 players
+            log_details = (idx < 3) and self._league_averages is not None
+            per_game_value = self.calculate_player_value(
+                per_game_stats,
+                log_details=log_details,
+                player_name=player_name
+            )
 
             sim_roster.append({
                 'player_id': player.get('player_id', 0),
-                'name': player.get('name', 'Unknown'),
+                'name': player_name,
                 'nba_team': player.get('nba_team', 'UNK'),
                 'eligible_slots': player.get('eligible_slots', []),
                 'per_game_stats': per_game_stats,
-                'per_game_value': self.calculate_player_value(per_game_stats),
+                'per_game_value': per_game_value,
                 'original_projected_stats': projected_stats,
                 'original_projected_games': projected_games,
                 'lineupSlotId': player.get('lineupSlotId', 0),
@@ -2547,6 +2730,8 @@ class StartLimitOptimizer:
                 'season_outlook': player.get('season_outlook', ''),
                 'droppable': player.get('droppable', True),
             })
+
+        self._log("-" * 50)
 
         # Fetch actual starts used from ESPN
         initial_starts = self.fetch_starts_used(team_id)

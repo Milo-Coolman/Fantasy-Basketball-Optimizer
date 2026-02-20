@@ -19,6 +19,7 @@ You are helping build a **Fantasy Basketball Optimizer** web application that in
 - **Python 3.10+**
 - **Flask** - Web framework
 - **SQLAlchemy** - ORM
+- **Flask-Migrate** - Database migrations (Alembic wrapper)
 - **PostgreSQL** (production) / **SQLite** (development)
 - **espn-api** - ESPN Fantasy Basketball API wrapper
 - **scikit-learn** - Machine learning models
@@ -179,39 +180,176 @@ Combined FGM = 5.0, Combined FGA = 10.75
 Combined FG% = 5.0 ÷ 10.75 = 46.5% (NOT average of 47.3% and 45.7%)
 ```
 
-### 5. IR Player Handling & Return Projections
-- **Detection:** Players in IR slot identified by `lineupSlotId == 13` from ESPN API
-- **Return Projection:** Uses ESPN's expected return date
-- **RotoDropScenario Analysis:** When IR player returns:
-  - Calculates marginal value for each rostered player
-  - Simulates roster from return date forward
-  - Recommends optimal drop candidate with least Roto point loss
-  - Shows projected standings impact
+### 5. Injury Handling Implementation
+- **Data Source:** ESPN's `kona_playercard` endpoint via espn-api library
+- **Detection:** Only ESPN-reported injuries affect projections (no phantom injuries)
+- **IR Slot:** Players in IR identified by `lineupSlotId == 13` from ESPN API
+- **Schedule-Based:** Uses actual NBA team schedules for remaining games (not 82-game estimates)
+- **Return Projection:** Uses ESPN's expected return date for IR players
+- **IR Drop Optimizer (Simplified):** When IR player returns:
+  - Sorts droppable players by z-score value (lowest first)
+  - Recommends dropping the player with lowest z-score
+  - Calculates net gain: `ir_z_value - drop_z_value`
+  - Instant execution (no complex Roto simulations needed)
 
-### 6. Day-by-Day Start Limit Optimization (Roto)
+### 6. Projection Method Settings
+Users can configure how game rates are calculated for `projected_games`:
+
+**Adaptive Mode (Default):**
+| Games Played | Game Rate |
+|--------------|-----------|
+| 0-4 games    | 90% (grace period for new/returning players) |
+| 5+ games     | Actual rate (GP ÷ Team GP) with 75% floor |
+
+**Flat Rate Mode:**
+- User sets a fixed percentage (e.g., 85%)
+- Applied uniformly to all healthy players
+- Useful for simplified projections or testing
+
+**Key Settings:**
+- `projection_method`: "adaptive" or "flat_rate" (stored per league)
+- `flat_rate_value`: Decimal (0.0-1.0) for flat rate mode
+- 75% floor prevents over-penalizing players with early-season absences
+
+### 7. Day-by-Day Start Limit Optimization (Roto)
 For leagues with position start limits (e.g., 82 games per position):
 - **Daily Simulation:** For each remaining day, identifies which players have games
-- **Starter Assignment:** Assigns highest-value eligible player to each slot
+- **Z-Score Value System:** Players ranked by sum of z-scores across all categories
+- **Starter Assignment:** Assigns highest z-value eligible player to each slot
+- **Projected Games Enforcement:** Players can't exceed their `projected_games` limit
 - **Limit Enforcement:** Tracks `starts_used` per position, stops when limit reached
-- **Conflict Resolution:** Prioritizes higher-value players for limited slots
+- **Conflict Resolution:** Prioritizes higher z-value players for limited slots
 - **Output:** Realistic projections based on actual games player will start
 
-### 7. Trade Analyzer
+### 7.1 Z-Score Value Calculation
+The optimizer uses z-scores instead of hardcoded category weights:
+
+**Formula:** `z_score = (player_stat - league_mean) / league_std_dev`
+
+**League Averages:**
+- Calculated from all rostered players across all teams in the league
+- Includes mean and standard deviation for each scoring category
+- Cached and reused for consistent player comparisons
+
+**Per-Game Value:**
+```python
+per_game_value = sum(z_scores for all categories)
+# Example: LeBron = +8.5/game (elite), Buddy Hield = -0.82/game (below average)
+```
+
+**Category Handling:**
+- **Counting Stats:** PTS, REB, AST, STL, BLK, 3PM (higher = better)
+- **Turnovers:** Sign flipped (lower TO = positive z-score)
+- **Percentages:** FG% and FT% multiplied by 100 before z-score calculation
+  - Converts 0.476 → 47.6 to match counting stat scale
+
+**Benefits Over Hardcoded Weights:**
+- League-specific: Adapts to YOUR league's player pool
+- Scarcity-aware: Rare categories (BLK, STL) naturally weighted higher
+- Fair comparison: 25 PTS and 2.5 BLK compared on same scale
+- No manual tuning required
+
+### 8. Trade Analyzer
 - Input: Multi-player trades (any size, 2 teams only)
 - Output: Pre/post trade comparison, category value changes, win probability impact, fairness assessment
 - AI-generated trade suggestions based on team needs
 
-### 8. Waiver Wire Recommendations
+### 9. Waiver Wire Recommendations
 - Ranked list of available free agents
 - Impact score (0-100) for each player
 - Add/drop suggestions
 - Streaming recommendations for H2H leagues (favorable weekly schedules)
 
-### 9. Dashboard
+### 10. Dashboard
 - Current vs projected standings
 - Playoff/win probability visualization
 - Quick insights (top waiver targets, trade opportunities)
 - Category strengths/weaknesses
+
+---
+
+---
+
+## Key Bug Fixes (February 2026)
+
+### Phantom Injuries Removed
+- **Issue:** Players were being marked as injured without ESPN reporting an injury
+- **Fix:** Injury status now only comes from ESPN's `kona_playercard` endpoint
+- **Impact:** Projections no longer incorrectly reduce games for healthy players
+
+### Projected Games Enforcement
+- **Issue:** Start limit optimizer wasn't respecting individual player game limits
+- **Fix:** Added `projected_games` tracking per player, enforced in daily simulation
+- **Impact:** Prevents over-projecting players who miss games due to rest/minor injuries
+
+### Schedule-Based Calculations
+- **Issue:** Remaining games calculated from 82-game estimates, not actual schedules
+- **Fix:** Uses NBA team schedule data for accurate remaining games
+- **Impact:** More accurate projections, especially late in season
+
+### Game Rate Floor
+- **Issue:** Players with low early-season game rates were severely under-projected
+- **Fix:** 75% minimum floor for players with 5+ games in adaptive mode
+- **Impact:** More reasonable projections for players recovering from early issues
+
+---
+
+## Recent Major Changes (February 2026)
+
+### Z-Score Value System Implementation
+**Changed:** Replaced hardcoded category weights with dynamic z-score calculations
+
+**Why the Change:**
+- Hardcoded weights (e.g., PTS=1.0, REB=1.5) don't adapt to league-specific scarcity
+- Manual weight tuning was arbitrary and didn't reflect actual category value
+- Different leagues have different category distributions
+
+**New Approach:**
+- Calculate league-wide ROS per-game averages from all rostered players
+- Compute z-scores: `(player_stat - mean) / std_dev` for each category
+- Sum z-scores across all categories for total per-game value
+- Higher z-value players get priority in lineup slot assignments
+
+**Key Files:**
+- `backend/projections/start_limit_optimizer.py`:
+  - `calculate_league_averages()` - computes league-wide mean/std
+  - `calculate_player_value()` - computes z-score based value
+
+**Percentage Stat Handling:**
+- FG% and FT% multiplied by 100 before z-score calculation
+- Example: 0.476 → 47.6 to match counting stat scale
+- Ensures percentages have comparable z-score impact to counting stats
+
+### IR Drop Optimizer Simplification
+**Changed:** Replaced complex Roto simulation with simple z-score comparison
+
+**Previous Approach (Removed):**
+- For each drop candidate, simulated entire rest-of-season
+- Fetched all teams' stats and projected EOS totals
+- Ranked teams in each category to calculate Roto points
+- Took 10-30 seconds per IR player
+
+**New Approach:**
+- Sort droppable players by z-score value (lowest first)
+- Drop the player with the lowest z-score
+- Calculate net gain: `ir_z_value - drop_z_value`
+- Instant execution
+
+**Key Code Change:**
+```python
+# Simple z-score based drop decision
+candidates.sort(key=lambda p: p.get('per_game_value', 0))
+worst_player = candidates[0]  # Lowest z-score = best to drop
+```
+
+### Deferred: Category Balancing (Phase 2)
+**Status:** Not implemented, deferred for future consideration
+
+**Concept:** Instead of maximizing total z-score, balance categories to avoid punting
+**Why Deferred:**
+- Z-score approach already provides good baseline optimization
+- Category balancing adds complexity without clear benefit
+- Users can manually identify weak categories from dashboard
 
 ---
 
@@ -226,6 +364,8 @@ For leagues with position start limits (e.g., 82 games per position):
 - league_type (H2H_CATEGORY, H2H_POINTS, ROTO)
 - roster_settings (JSONB), scoring_settings (JSONB)
 - last_updated, refresh_schedule
+- projection_method ("adaptive" or "flat_rate")
+- flat_rate_value (decimal, 0.0-1.0)
 
 ### Teams
 - id, league_id, espn_team_id, team_name, owner_name
@@ -258,23 +398,28 @@ For leagues with position start limits (e.g., 82 games per position):
 
 ## Development Phases
 
-### Phase 1: Foundation ✓ (YOU ARE HERE)
-- Set up project structure
-- Configure Flask backend with SQLAlchemy
-- Set up SQLite database with schema
+### Phase 1: Foundation ✓
+- ✅ Set up project structure
+- ✅ Configure Flask backend with SQLAlchemy
+- ✅ Set up SQLite database with schema
+- ✅ Configure Flask-Migrate for database migrations
 - Create React frontend with basic routing
 - Implement user authentication
 - Build ESPN cookie setup workflow
 
-### Phase 2: Data Integration
-- Integrate espn-api package
-- Build ESPN client service
+### Phase 2: Data Integration ✓
+- ✅ Integrate espn-api package
+- ✅ Build ESPN client service
+- ✅ Implement injury handling (kona_playercard endpoint)
 - Implement data caching
 - Create Basketball Reference scraper
 - Build database CRUD operations
 - Implement daily refresh scheduler
 
-### Phase 3: Projection Engine
+### Phase 3: Projection Engine (IN PROGRESS)
+- ✅ Build projection method settings (adaptive/flat rate)
+- ✅ Implement schedule-based remaining games calculation
+- ✅ Add projected_games enforcement in start limit optimizer
 - Collect training data
 - Train ML models
 - Build statistical projection component
@@ -326,6 +471,14 @@ For leagues with position start limits (e.g., 82 games per position):
 - **Tiered weighting system** based on games played (see Section 4 above)
 - Weights are fixed by design - no manual intervention needed during season
 - Annual retraining before each NBA season
+
+### Injury & Game Rate Handling
+- **Injury Source:** ESPN's `kona_playercard` endpoint (via espn-api library)
+- **No Phantom Injuries:** Only ESPN-reported injuries affect projections
+- **Schedule-Based:** Remaining games calculated from actual NBA team schedules
+- **Adaptive Mode:** 0-4 GP = 90% rate (grace period), 5+ GP = actual rate with 75% floor
+- **Flat Rate Mode:** User-configurable fixed percentage for all players
+- **Projected Games:** Enforced in start limit optimizer to prevent over-projection
 
 ### Security
 - Password hashing with bcrypt (12+ rounds)
@@ -426,12 +579,33 @@ pip install -r requirements.txt
 
 # Run Flask app
 flask run
-
-# Database migrations (when using Flask-Migrate)
-flask db init
-flask db migrate -m "Initial migration"
-flask db upgrade
 ```
+
+### Database Migrations (Flask-Migrate)
+```bash
+# Initialize migrations (first time only)
+flask db init
+
+# Create a new migration after model changes
+flask db migrate -m "Add projection_method to leagues"
+
+# Apply migrations to database
+flask db upgrade
+
+# Downgrade to previous migration
+flask db downgrade
+
+# Show current migration version
+flask db current
+
+# Show migration history
+flask db history
+```
+
+**Migration Setup (already configured):**
+- Flask-Migrate is installed and configured in `app.py`
+- Migrations stored in `migrations/` directory
+- `Migrate(app, db)` initialization in app factory
 
 ### Frontend
 ```bash
@@ -498,13 +672,21 @@ npm run build
 
 ## Current Status
 
-**Phase:** Phase 1 - Foundation
+**Phase:** Phase 3 - Projection Engine (In Progress)
+**Completed:**
+- Project structure and Flask backend
+- SQLite database with migrations (Flask-Migrate)
+- ESPN integration with espn-api
+- Injury handling from ESPN kona_playercard endpoint
+- Projection method settings (adaptive/flat rate)
+- Schedule-based remaining games calculation
+- Start limit optimizer with projected_games enforcement
+
 **Next Steps:**
-1. Set up initial project structure
-2. Create backend Flask app with basic routing
-3. Set up SQLite database with schema
-4. Implement user authentication
-5. Create basic React frontend
+1. Complete hybrid projection engine
+2. Build trade analyzer logic
+3. Create waiver wire recommendation algorithm
+4. Build React frontend components
 
 ---
 
@@ -520,5 +702,5 @@ npm run build
 
 ---
 
-**Last Updated:** February 11, 2026
-**Version:** 1.1
+**Last Updated:** February 19, 2026
+**Version:** 1.3 (Z-Score Value System & IR Drop Optimizer Simplification)

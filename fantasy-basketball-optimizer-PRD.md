@@ -29,6 +29,7 @@ Leverage machine learning and statistical analysis to provide actionable insight
 - Python 3.10+
 - Flask (web framework)
 - SQLAlchemy (ORM)
+- Flask-Migrate (database migrations via Alembic)
 - PostgreSQL (production) / SQLite (development)
 - espn-api package (ESPN Fantasy Basketball API wrapper)
 - scikit-learn (machine learning)
@@ -291,38 +292,104 @@ This is more accurate than averaging 47.3% and 45.7% directly.
 - Overall league win probability
 - Identify strengths/weaknesses by category
 
-**3.3.7 IR Player Handling and Return Projections**
+**3.3.7 Injury Detection and Handling**
 
-The system intelligently handles players on Injured Reserve (IR) and projects the impact of their return:
+The system uses ESPN's injury data to accurately project player availability and remaining games.
 
-**IR Player Detection:**
-- Players in IR slot are identified by `lineupSlotId == 13` from ESPN API
-- Retrieves injury status and expected return date from ESPN player data
-- Tracks which players are on IR vs active roster
+**Injury Data Source:**
+- Injury information is fetched from ESPN's `kona_playercard` endpoint via the espn-api library
+- This provides real-time injury status, expected return dates, and injury details
+- Players are only marked as injured when ESPN reports an actual injury status
+
+**Injury Status Detection:**
+- **Active/Healthy:** No injury status from ESPN - player projected for full remaining games
+- **Day-to-Day (DTD):** Minor injury, may miss games - projections adjusted accordingly
+- **Out (O):** Currently injured and missing games - projections pause until return
+- **Injured Reserve (IR):** Long-term injury, player in IR slot (`lineupSlotId == 13`)
+
+**Projected Games Calculation:**
+For each player, remaining games are calculated from:
+1. **Team Schedule:** Actual NBA games remaining for the player's team (from schedule data)
+2. **Game Rate:** Player's games played / team games played (capped at 100%)
+3. **Projection Method:** Either adaptive or flat rate (see Section 3.3.9)
+4. **Injury Adjustment:** If injured, remaining games = 0 until return date
+
+**Key Implementation Notes:**
+- Phantom injuries removed: Only ESPN-reported injuries affect projections
+- Schedule-based: Uses actual team schedules, not estimated 82-game totals
+- Return dates: ESPN provides expected return dates for injured players
+- IR slot detection: `lineupSlotId == 13` identifies players on IR
+
+**3.3.8 IR Player Return Projections**
+
+For players on Injured Reserve with expected return dates:
 
 **Return Projection Logic:**
-For players expected to return before the season ends:
 1. Retrieves the expected return date from ESPN's injury timeline
-2. Projects the IR player will be activated on their return date
-3. Runs drop decision analysis to determine optimal roster move
+2. Calculates team games remaining from that date forward
+3. Projects the IR player will be activated on their return date
+4. Runs drop decision analysis to determine optimal roster move
 
-**RotoDropScenario Analysis:**
-When an IR player is projected to return, the system evaluates which active roster player to drop:
+**IR Drop Optimizer (Z-Score Based):**
+When an IR player is projected to return, the system recommends which active roster player to drop using a simplified z-score comparison:
 
-- **Marginal Value Calculation:** For each rostered player, calculates the end-of-season Roto point impact of dropping them
-- **End-of-Season Optimization:** Uses total Roto points (not just rest-of-season) to evaluate scenarios
-- **Simulation Approach:**
-  - Simulates roster from return date forward with IR player active
-  - Calculates team's projected Roto standings with each potential drop
-  - Identifies the player whose removal causes the least Roto point loss
-- **Output:** Recommends the optimal drop candidate and shows the projected standings impact
+- **Z-Score Value:** Each player has a per-game z-score value (see Section 3.3.10)
+- **Drop Logic:** Drop the player with the **lowest z-score value** (worst performer)
+- **Net Gain Calculation:** `gain = ir_player_z_value - drop_player_z_value`
+- **Example Decision:**
+  ```
+  IR Player: Kawhi Leonard (z-value: +3.45/game)
+  Drop Candidates:
+    1. Buddy Hield: z-value=-0.82/game (gain: +4.27)
+    2. Dillon Brooks: z-value=-0.45/game (gain: +3.90)
+    3. Marcus Smart: z-value=+0.12/game (gain: +3.33)
+
+  OPTIMAL DROP: Buddy Hield (lowest z-score, highest gain)
+  ```
+- **Execution Speed:** Instant results (vs. 10-30 seconds with full Roto simulation)
 
 **Key Considerations:**
-- Only analyzes IR returns for players with concrete return timelines
-- Factors in remaining games for both IR player and drop candidates
-- Respects position eligibility and roster construction rules
+- Only analyzes IR returns for players with `projected_games > 0`
+- Z-scores capture relative value across all categories automatically
+- Respects ESPN's droppable flag for each player
+- Handles multiple IR returns by excluding already-dropped players
 
-**3.3.8 Day-by-Day Start Limit Optimization**
+**3.3.9 Projection Method Settings**
+
+Users can configure how game rates are calculated for projecting remaining games. This setting affects the `projected_games` value used in all projections.
+
+**Adaptive Mode (Default):**
+Adjusts the game rate calculation based on how many games a player has played:
+
+| Games Played | Game Rate Calculation |
+|--------------|----------------------|
+| 0-4 games    | 90% of remaining team games (grace period) |
+| 5+ games     | Actual rate (GP ÷ Team GP) with 75% floor |
+
+**Grace Period (0-4 games):** New players, recently traded players, or players returning from early-season injuries haven't had enough games to establish a reliable rate. The 90% assumption provides a reasonable starting point.
+
+**75% Floor:** Players with 5+ games use their actual game rate, but never below 75%. This prevents over-penalizing players who missed games due to minor injuries or rest days early in the season.
+
+**Example:**
+```
+Player A: 40 GP out of 50 team games = 80% rate → Uses 80%
+Player B: 30 GP out of 50 team games = 60% rate → Uses 75% (floor applied)
+Player C: 3 GP (new to team) → Uses 90% (grace period)
+```
+
+**Flat Rate Mode:**
+Applies a user-specified percentage to all players uniformly:
+- User sets a fixed game rate (e.g., 85%)
+- All healthy players are projected for `remaining_team_games × flat_rate`
+- Ignores individual player game rates
+- Useful for simplified projections or testing scenarios
+
+**Settings Storage:**
+- `projection_method`: "adaptive" or "flat_rate"
+- `flat_rate_value`: Decimal (0.0-1.0) used when method is "flat_rate"
+- Stored per league in the `leagues` table
+
+**3.3.10 Day-by-Day Start Limit Optimization**
 
 Roto leagues typically enforce position start limits (commonly 82 games per position across the full NBA season). The day-by-day optimizer ensures projections accurately reflect what players will actually contribute given these constraints.
 
@@ -331,23 +398,83 @@ Roto leagues typically enforce position start limits (commonly 82 games per posi
 - Full-season leagues typically allow 82 starts per position (one per NBA game day)
 - Players exceeding the limit for their position cannot contribute additional stats
 
+**Projected Games Enforcement:**
+The optimizer respects each player's `projected_games` limit:
+- A player can only be assigned starts up to their `projected_games` value
+- This prevents over-projecting players expected to miss games due to rest or injury history
+- `projected_games` is calculated using the projection method settings (adaptive or flat rate)
+
+**3.3.11 Z-Score Based Player Value System**
+
+The optimizer uses z-scores to calculate each player's per-game fantasy value, enabling fair comparison across all categories regardless of scale.
+
+**League-Wide Averages Calculation:**
+Before simulating the season, the optimizer calculates league averages from all rostered players:
+1. Collects per-game stats for all players across all teams in the league
+2. Calculates mean and standard deviation for each scoring category
+3. Caches these values for consistent z-score calculations
+
+**Z-Score Formula:**
+```
+z_score = (player_stat - league_mean) / league_std_dev
+```
+
+For each player, per-game value is calculated as:
+```
+per_game_value = Σ z_scores across all categories
+```
+
+**Category Handling:**
+- **Counting Stats (PTS, REB, AST, STL, BLK, 3PM):** Higher values = positive z-score
+- **Turnovers (TO):** Sign is flipped (lower TO = positive z-score)
+- **Percentage Stats (FG%, FT%):** Multiplied by 100 before z-score calculation
+  - Converts 0.476 → 47.6 to match scale of counting stats
+  - Ensures fair weighting between percentages and counting stats
+
+**Example Z-Score Calculation:**
+```
+League Averages: PTS=15.2 (std=6.5), REB=5.8 (std=2.3), AST=3.4 (std=2.1)
+
+LeBron James: 25.5 PTS, 7.2 REB, 8.1 AST
+  PTS z-score: (25.5 - 15.2) / 6.5 = +1.58
+  REB z-score: (7.2 - 5.8) / 2.3 = +0.61
+  AST z-score: (8.1 - 3.4) / 2.1 = +2.24
+  ... (repeat for all 8-9 categories)
+  Total z-value: +8.5/game (elite player)
+
+Buddy Hield: 12.8 PTS, 3.2 REB, 2.1 AST
+  PTS z-score: (12.8 - 15.2) / 6.5 = -0.37
+  REB z-score: (3.2 - 5.8) / 2.3 = -1.13
+  AST z-score: (2.1 - 3.4) / 2.1 = -0.62
+  ... (repeat for all categories)
+  Total z-value: -0.82/game (below average)
+```
+
+**Why Z-Scores?**
+- **League-Specific:** Averages are calculated from YOUR league's roster players
+- **Category Scarcity:** Naturally weights scarce categories higher (smaller std = bigger z-score impact)
+- **Fair Comparison:** 25 PTS and 2.5 BLK can be compared on the same scale
+- **No Manual Tuning:** Replaces arbitrary hardcoded category weights
+
 **Day-by-Day Simulation Approach:**
 
 For each remaining day in the NBA season, the optimizer:
 
 1. **Check Schedule:** Identifies which rostered players have NBA games that day
-2. **Assign Starters:** For each roster slot, assigns the highest-value eligible player:
+2. **Check Player Limits:** Verifies player hasn't exceeded their `projected_games` limit
+3. **Assign Starters:** For each roster slot, assigns the highest z-value eligible player:
    - Player must have a game that day
    - Player must be eligible for that position
+   - Player must not have exceeded their projected games
    - Position must not have reached its start limit
-3. **Track Usage:** Increments `starts_used` counter for the assigned position
-4. **Bench Players:** Players not assigned to a starting slot are "benched" and contribute 0 stats for that day
-5. **Enforce Limits:** Once a position reaches its start limit, no more players can be assigned there
+4. **Track Usage:** Increments `starts_used` counter for the assigned position and player
+5. **Bench Players:** Players not assigned to a starting slot are "benched" and contribute 0 stats for that day
+6. **Enforce Limits:** Once a position or player reaches their limit, no more starts assigned
 
 **Optimization Logic:**
 - **Position Eligibility:** Players can only fill slots they're eligible for (e.g., a PG/SG can fill PG, SG, G, or UTIL)
-- **Value-Based Assignment:** Prioritizes assigning higher-value players to positions with more remaining starts
-- **Conflict Resolution:** When multiple players compete for the same slot, assigns based on projected per-game fantasy value
+- **Z-Score Priority:** Higher z-value players get assigned first to maximize total value
+- **Conflict Resolution:** When multiple players compete for the same slot, assigns based on z-score per-game value
 - **Schedule Awareness:** Only considers players whose NBA teams play on each specific day
 
 **Projection Output:**
@@ -364,16 +491,18 @@ Starts used: 50
 Starts remaining: 32
 
 Roster has 2 PGs:
-- Player A: 40 remaining games, 25.0 projected fantasy points/game
-- Player B: 38 remaining games, 18.0 projected fantasy points/game
+- Player A: 40 remaining games, z-value=+3.2/game
+- Player B: 38 remaining games, z-value=+1.8/game
 
-Optimizer assigns Player A to PG slot when both have games.
+Optimizer assigns Player A to PG slot when both have games (higher z-value).
 When only 32 more PG starts are available, some games will have
 both players benched or assigned to alternate positions (G/UTIL).
 ```
 
 **Benefits:**
 - Accurate projections that respect roster constraints
+- Z-score based prioritization ensures optimal player assignment
+- League-specific value calculation adapts to your league's scoring landscape
 - Identifies position scarcity issues (too many players, not enough starts)
 - Helps users optimize roster construction for maximum stat accumulation
 - Prevents misleading projections based on unrealistic playing time assumptions
@@ -526,6 +655,8 @@ CREATE TABLE leagues (
     playoff_settings JSONB, -- Playoff structure
     last_updated TIMESTAMP,
     refresh_schedule TIME DEFAULT '03:00:00',
+    projection_method VARCHAR(20) DEFAULT 'adaptive', -- 'adaptive' or 'flat_rate'
+    flat_rate_value DECIMAL(3,2) DEFAULT 0.85, -- Used when projection_method is 'flat_rate'
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, espn_league_id, season)
 );
@@ -1045,6 +1176,11 @@ The primary projection approach uses the tiered weighting system documented in S
   - Remove league option
   - Edit ESPN cookies (if expired)
 
+- **Projection Settings (per league):**
+  - Projection method toggle (Adaptive vs Flat Rate)
+  - Flat rate value slider (when flat rate selected)
+  - Preview of how settings affect projections
+
 - **Preferences:**
   - Refresh schedule time
   - Email notifications toggle (future)
@@ -1363,7 +1499,8 @@ The project is structured for iterative development with clear phases, allowing 
 
 ---
 
-**Document Version:** 1.0  
-**Last Updated:** February 2, 2026  
-**Author:** Milo (with Claude)  
-**Status:** Draft - Awaiting Approval
+**Document Version:** 1.2
+**Last Updated:** February 19, 2026
+**Changes:** Added Z-Score Value System (3.3.11), simplified IR Drop Optimizer (3.3.8)
+**Author:** Milo (with Claude)
+**Status:** Active Development
