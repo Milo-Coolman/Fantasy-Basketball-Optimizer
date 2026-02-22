@@ -2127,13 +2127,175 @@ def calculate_projected_standings(
     return projected
 
 
+def calculate_league_averages_for_trade(
+    all_rosters: Dict[int, List[Dict]],
+    categories: Optional[List[str]] = None
+) -> Dict[str, Dict[str, float]]:
+    """
+    Calculate league-wide averages for z-score calculations in trade analyzer.
+
+    Args:
+        all_rosters: Dict mapping team_id to roster (list of player dicts)
+        categories: List of category keys to calculate (default: standard 9-cat)
+
+    Returns:
+        Dict mapping stat_key -> {'mean': float, 'std': float}
+    """
+    import statistics
+
+    # Default categories (excluding TO which may not be in all leagues)
+    default_categories = ['pts', 'reb', 'ast', 'stl', 'blk', '3pm', 'fg_pct', 'ft_pct']
+    stat_keys = set(categories) if categories else set(default_categories)
+
+    # Map alternate key names
+    STAT_KEY_ALTERNATES = {
+        'pts': ['pts', 'PTS'],
+        'reb': ['reb', 'REB'],
+        'ast': ['ast', 'AST'],
+        'stl': ['stl', 'STL'],
+        'blk': ['blk', 'BLK'],
+        '3pm': ['3pm', '3PM'],
+        'to': ['to', 'TO'],
+        'fg_pct': ['fg_pct', 'FG%', 'FG_PCT', 'fgPct'],
+        'ft_pct': ['ft_pct', 'FT%', 'FT_PCT', 'ftPct'],
+    }
+
+    # Collect all player stats
+    stat_values: Dict[str, List[float]] = {key: [] for key in stat_keys}
+
+    for team_id, roster in all_rosters.items():
+        for player in roster:
+            per_game_stats = player.get('per_game_stats', {})
+            if not per_game_stats:
+                continue
+
+            for stat_key in stat_keys:
+                # Try alternate keys
+                value = None
+                for alt in STAT_KEY_ALTERNATES.get(stat_key, [stat_key]):
+                    if alt in per_game_stats:
+                        value = per_game_stats[alt]
+                        break
+
+                if value is not None and value > 0:
+                    # Scale percentages to 0-100 if needed
+                    if stat_key in ['fg_pct', 'ft_pct'] and 0 < value < 1:
+                        value = value * 100
+                    stat_values[stat_key].append(float(value))
+
+    # Calculate mean and std for each category
+    averages = {}
+    for stat_key, values in stat_values.items():
+        if len(values) >= 2:
+            mean_val = statistics.mean(values)
+            std_val = statistics.stdev(values)
+        elif len(values) == 1:
+            mean_val = values[0]
+            std_val = 1.0  # Default std if only one value
+        else:
+            mean_val = 0.0
+            std_val = 1.0
+
+        averages[stat_key] = {
+            'mean': round(mean_val, 3),
+            'std': round(std_val, 3)
+        }
+
+    logger.debug(f"Calculated league averages for trade: {list(averages.keys())}")
+    return averages
+
+
+def get_category_analysis_from_ranks(
+    projected_category_ranks: Dict[str, int],
+    num_teams: int
+) -> Dict[str, Any]:
+    """
+    Analyze team's category strengths and weaknesses based on projected ranks.
+
+    Uses league-relative rankings instead of absolute thresholds.
+    This makes QuickInsights consistent with the Roto projected standings.
+
+    Args:
+        projected_category_ranks: Dict mapping category to projected rank (1-based)
+        num_teams: Number of teams in the league
+
+    Returns:
+        Dict with strengths, weaknesses, and rankings
+    """
+    strengths = []
+    weaknesses = []
+    rankings = {}
+
+    # Debug: Log all incoming ranks
+    logger.info(f"[CategoryAnalysis] Input ranks: {projected_category_ranks}")
+    logger.info(f"[CategoryAnalysis] Num teams: {num_teams}")
+
+    # Category display name mapping
+    cat_display = {
+        'pts': 'PTS', 'reb': 'REB', 'ast': 'AST', 'stl': 'STL',
+        'blk': 'BLK', '3pm': '3PM', 'fg_pct': 'FG%', 'ft_pct': 'FT%',
+        'to': 'TO', 'fgpct': 'FG%', 'ftpct': 'FT%'
+    }
+
+    for category, rank in projected_category_ranks.items():
+        cat_lower = category.lower().replace('%', 'pct').replace('_', '')
+        display_name = cat_display.get(cat_lower, category.upper())
+
+        rankings[display_name] = rank
+
+        # Debug: Log percentage categories specifically
+        if 'fg' in cat_lower or 'ft' in cat_lower or '%' in category.lower():
+            logger.info(f"[CategoryAnalysis] PERCENTAGE: {category} -> cat_lower={cat_lower} -> display={display_name} -> rank={rank}")
+
+        # Top 3 = strength (ranks 1, 2, 3)
+        if rank <= 3:
+            level = 'DOMINANT' if rank == 1 else ('STRONG' if rank == 2 else 'SOLID')
+            strengths.append({
+                'category': display_name,
+                'rank': rank,
+                'level': level
+            })
+            logger.info(f"[CategoryAnalysis] -> STRENGTH: {display_name} rank={rank}")
+        # Bottom 3 = weakness (for 10-team league: ranks 8, 9, 10)
+        elif rank >= num_teams - 2:
+            level = 'PUNT' if rank == num_teams else ('WEAK' if rank == num_teams - 1 else 'BELOW AVG')
+            weaknesses.append({
+                'category': display_name,
+                'rank': rank,
+                'level': level
+            })
+            logger.info(f"[CategoryAnalysis] -> WEAKNESS: {display_name} rank={rank} (threshold={num_teams - 2})")
+
+    # Sort strengths by rank (best first)
+    strengths.sort(key=lambda x: x['rank'])
+    # Sort weaknesses by rank (worst first)
+    weaknesses.sort(key=lambda x: x['rank'], reverse=True)
+
+    # Log final results
+    final_strengths = [s['category'] for s in strengths[:3]]
+    final_weaknesses = [w['category'] for w in weaknesses[:3]]
+    logger.info(f"[CategoryAnalysis] FINAL: strengths={final_strengths}, weaknesses={final_weaknesses}")
+
+    # Return just category names for backwards compatibility with waiver/trade functions
+    return {
+        'strengths': final_strengths,
+        'weaknesses': final_weaknesses,
+        'strength_details': strengths[:3],
+        'weakness_details': weaknesses[:3],
+        'rankings': rankings,
+        'num_teams': num_teams
+    }
+
+
 def get_category_analysis(
     roster: List[Dict],
     league_type: str,
     season: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Analyze team's category strengths and weaknesses.
+    Legacy function: Analyze team's category strengths and weaknesses using absolute thresholds.
+
+    DEPRECATED: Use get_category_analysis_from_ranks() instead for league-relative analysis.
 
     Args:
         roster: Team roster with player stats
@@ -2201,7 +2363,8 @@ def get_category_analysis(
     else:
         categories['ft_pct'] = 0
 
-    # Determine strengths and weaknesses
+    # Determine strengths and weaknesses using absolute thresholds
+    # NOTE: This is less accurate than rank-based analysis
     thresholds = {
         'pts': {'strong': 18, 'weak': 12},
         'reb': {'strong': 6, 'weak': 4},
@@ -2632,21 +2795,44 @@ def get_dashboard(league_id: int):
                         'category_points': my_team_current['category_points'],
                     }
 
-            # Step 13: Fetch roster for analysis
-            current_step = "fetching roster for Roto insights"
+            # Step 13: Fetch all rosters for trade analyzer and analysis
+            current_step = "fetching all rosters for Roto insights"
             logger.info(f"Step 13: {current_step}")
+            all_rosters = {}
             roster = []
-            if my_team_id:
-                try:
-                    roster = espn_client.get_team_roster(my_team_id)
-                    logger.info(f"  Fetched roster with {len(roster)} players")
-                except Exception as e:
-                    logger.warning(f"Could not fetch roster: {e}")
+            try:
+                all_rosters = espn_client.get_all_rosters()
+                logger.info(f"  Fetched rosters for {len(all_rosters)} teams")
+                if my_team_id:
+                    roster = all_rosters.get(my_team_id, [])
+                    logger.info(f"  User roster has {len(roster)} players")
+            except Exception as e:
+                logger.warning(f"Could not fetch all rosters: {e}")
+                # Fallback to single roster fetch
+                if my_team_id:
+                    try:
+                        roster = espn_client.get_team_roster(my_team_id)
+                        all_rosters[my_team_id] = roster
+                        logger.info(f"  Fallback: Fetched user roster with {len(roster)} players")
+                    except Exception as e2:
+                        logger.warning(f"Could not fetch user roster: {e2}")
 
             # Step 14: Build insights
             current_step = "building Roto insights"
             logger.info(f"Step 14: {current_step}")
-            category_analysis = get_category_analysis(roster, league.league_type, season=espn_client.year)
+
+            # Use rank-based analysis if projected ranks are available (preferred)
+            num_teams = len(projected_standings)
+            if my_team_projected and my_team_projected.get('projected_category_ranks'):
+                projected_ranks = my_team_projected['projected_category_ranks']
+                logger.info(f"  [DEBUG] my_team_projected['projected_category_ranks'] = {projected_ranks}")
+                category_analysis = get_category_analysis_from_ranks(projected_ranks, num_teams)
+                logger.info(f"  Using rank-based category analysis (num_teams={num_teams})")
+            else:
+                # Fallback to absolute threshold analysis
+                category_analysis = get_category_analysis(roster, league.league_type, season=espn_client.year)
+                logger.info(f"  Using threshold-based category analysis (fallback)")
+
             waiver_targets = get_waiver_targets(espn_client, category_analysis.get('weaknesses', []), season=espn_client.year)
             trade_opportunities = get_trade_opportunities(
                 espn_client, my_team_id,
@@ -2730,6 +2916,10 @@ def get_dashboard(league_id: int):
                     'trade_opportunities': trade_opportunities,
                 },
                 'start_limits': start_limits_summary,
+                # Team rosters for trade analyzer (keyed by team_id)
+                'team_rosters': all_rosters,
+                # League averages for trade z-score calculation
+                'league_averages': calculate_league_averages_for_trade(all_rosters),
                 'last_updated': datetime.utcnow().isoformat(),
             }
 
@@ -2801,21 +2991,43 @@ def get_dashboard(league_id: int):
                         'playoff_probability': my_team_projected.get('playoff_probability', 0) / 100,
                     }
 
-            # Step 11 (H2H): Get roster for analysis
-            current_step = "fetching roster for H2H insights"
+            # Step 11 (H2H): Get all rosters for trade analyzer and analysis
+            current_step = "fetching all rosters for H2H insights"
             logger.info(f"Step 11: {current_step}")
+            all_rosters = {}
             roster = []
-            if my_team_id:
-                try:
-                    roster = espn_client.get_team_roster(my_team_id)
-                    logger.info(f"  Fetched roster with {len(roster)} players")
-                except Exception as e:
-                    logger.warning(f"Could not fetch roster: {e}")
+            try:
+                all_rosters = espn_client.get_all_rosters()
+                logger.info(f"  Fetched rosters for {len(all_rosters)} teams")
+                if my_team_id:
+                    roster = all_rosters.get(my_team_id, [])
+                    logger.info(f"  User roster has {len(roster)} players")
+            except Exception as e:
+                logger.warning(f"Could not fetch all rosters: {e}")
+                # Fallback to single roster fetch
+                if my_team_id:
+                    try:
+                        roster = espn_client.get_team_roster(my_team_id)
+                        all_rosters[my_team_id] = roster
+                        logger.info(f"  Fallback: Fetched user roster with {len(roster)} players")
+                    except Exception as e2:
+                        logger.warning(f"Could not fetch user roster: {e2}")
 
             # Step 12 (H2H): Build insights
             current_step = "building H2H insights"
             logger.info(f"Step 12: {current_step}")
-            category_analysis = get_category_analysis(roster, league.league_type, season=espn_client.year)
+
+            # Use rank-based analysis if projected ranks are available (H2H Categories)
+            num_teams = len(projected_standings)
+            if my_team_projected and my_team_projected.get('projected_category_ranks'):
+                projected_ranks = my_team_projected['projected_category_ranks']
+                category_analysis = get_category_analysis_from_ranks(projected_ranks, num_teams)
+                logger.info(f"  Using rank-based category analysis (num_teams={num_teams})")
+            else:
+                # Fallback to absolute threshold analysis (H2H Points or no ranks available)
+                category_analysis = get_category_analysis(roster, league.league_type, season=espn_client.year)
+                logger.info(f"  Using threshold-based category analysis (fallback)")
+
             waiver_targets = get_waiver_targets(espn_client, category_analysis.get('weaknesses', []), season=espn_client.year)
             trade_opportunities = get_trade_opportunities(
                 espn_client, my_team_id,
@@ -2845,6 +3057,10 @@ def get_dashboard(league_id: int):
                     'waiver_targets': waiver_targets,
                     'trade_opportunities': trade_opportunities,
                 },
+                # Team rosters for trade analyzer (keyed by team_id)
+                'team_rosters': all_rosters,
+                # League averages for trade z-score calculation
+                'league_averages': calculate_league_averages_for_trade(all_rosters),
                 'last_updated': datetime.utcnow().isoformat(),
             }
 

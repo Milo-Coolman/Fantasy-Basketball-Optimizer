@@ -761,3 +761,64 @@ def projection_settings(league_id):
     except Exception as e:
         logger.error(f"Error updating projection settings: {e}")
         return jsonify({'error': 'Failed to update projection settings'}), 500
+
+
+@leagues_bp.route('/<int:league_id>/trade-settings', methods=['GET', 'PUT'])
+@login_required
+def trade_settings(league_id):
+    """
+    Get or update trade suggestion settings for a league.
+
+    GET: Returns current trade suggestion mode
+    PUT: Updates trade suggestion mode
+
+    Trade suggestion modes:
+        - 'conservative': Only very fair trades (-0.5 to +0.5 z-score)
+        - 'normal': Slightly favorable trades OK (-0.25 to +1.0 z-score)
+        - 'aggressive': Only trades that benefit you (0.0 to +1.5 z-score)
+    """
+    from backend.extensions import db
+
+    try:
+        league = get_league_or_404(league_id, current_user.id)
+
+        if request.method == 'GET':
+            return jsonify({
+                'success': True,
+                'trade_suggestion_mode': league.trade_suggestion_mode or 'normal',
+            }), 200
+
+        # PUT - update settings
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+
+        # Validate trade_suggestion_mode
+        mode = data.get('trade_suggestion_mode', 'normal')
+        valid_modes = ('conservative', 'normal', 'aggressive')
+        if mode not in valid_modes:
+            return jsonify({
+                'error': f'Invalid trade_suggestion_mode. Must be one of: {", ".join(valid_modes)}'
+            }), 400
+
+        # Update league settings
+        league.trade_suggestion_mode = mode
+        db.session.commit()
+
+        logger.info(f"Updated trade settings for league {league_id}: mode={mode}")
+
+        return jsonify({
+            'success': True,
+            'trade_suggestion_mode': league.trade_suggestion_mode
+        }), 200
+
+    except LeagueNotFoundError:
+        return jsonify({'error': 'League not found'}), 404
+
+    except LeagueAccessDeniedError:
+        return jsonify({'error': 'Access denied'}), 403
+
+    except Exception as e:
+        logger.error(f"Error updating trade settings: {e}")
+        return jsonify({'error': 'Failed to update trade settings'}), 500

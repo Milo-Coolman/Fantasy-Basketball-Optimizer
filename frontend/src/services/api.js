@@ -161,9 +161,73 @@ export const analyzeTrade = async (leagueId, tradeData) => {
 
 /**
  * Get trade suggestions for a team
+ *
+ * @param {number} leagueId - League ID
+ * @param {number} teamId - User's team ID
+ * @param {Object} projectedCategoryRanks - Projected category ranks from dashboard data
+ * @param {Object} allTeamsProjectedRanks - Optional: all teams' projected ranks
+ * @param {Object} teamRosters - Optional: all teams' rosters with z-scores (from dashboard)
+ * @param {Object} leagueAverages - Optional: league averages for z-score calculation
+ * @param {number} maxSuggestions - Maximum suggestions to return (default 5)
  */
-export const fetchTradeSuggestions = async (leagueId, teamId) => {
-  const response = await api.get(`/leagues/${leagueId}/trades/suggestions?team_id=${teamId}`);
+export const fetchTradeSuggestions = async (
+  leagueId,
+  teamId,
+  projectedCategoryRanks = {},
+  allTeamsProjectedRanks = {},
+  teamRosters = null,
+  leagueAverages = null,
+  maxSuggestions = 5
+) => {
+  const requestData = {
+    team_id: teamId,
+    projected_category_ranks: projectedCategoryRanks,
+    all_teams_projected_ranks: allTeamsProjectedRanks,
+    max_suggestions: maxSuggestions,
+  };
+
+  // Pass rosters with z-scores if available (to avoid recalculation)
+  if (teamRosters) {
+    requestData.team_rosters = teamRosters;
+  }
+
+  // Pass league averages if available (for consistent z-score calculation)
+  if (leagueAverages) {
+    requestData.league_averages = leagueAverages;
+  }
+
+  const response = await api.post(`/leagues/${leagueId}/trades/suggestions`, requestData);
+  return response.data;
+};
+
+/**
+ * Get trade history for a league
+ */
+export const fetchTradeHistory = async (leagueId) => {
+  const response = await api.get(`/leagues/${leagueId}/trades/history`);
+  return response.data;
+};
+
+/**
+ * Get trade settings for a league
+ *
+ * @param {number} leagueId - League ID
+ * @returns {Object} Trade settings including trade_suggestion_mode
+ */
+export const fetchTradeSettings = async (leagueId) => {
+  const response = await api.get(`/leagues/${leagueId}/trade-settings`);
+  return response.data;
+};
+
+/**
+ * Update trade settings for a league
+ *
+ * @param {number} leagueId - League ID
+ * @param {Object} settings - Trade settings to update
+ * @param {string} settings.trade_suggestion_mode - 'conservative', 'normal', or 'aggressive'
+ */
+export const updateTradeSettings = async (leagueId, settings) => {
+  const response = await api.put(`/leagues/${leagueId}/trade-settings`, settings);
   return response.data;
 };
 

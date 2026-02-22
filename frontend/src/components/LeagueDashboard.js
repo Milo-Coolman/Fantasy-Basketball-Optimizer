@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { fetchDashboard, refreshLeagueData } from '../services/api';
+import { fetchDashboard, refreshLeagueData, fetchTradeSuggestions } from '../services/api';
 import StandingsTable from './StandingsTable';
 import ProjectionsChart from './ProjectionsChart';
 import CategoryComparisonChart from './CategoryComparisonChart';
@@ -17,6 +17,7 @@ function LeagueDashboard() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [tradeSuggestions, setTradeSuggestions] = useState([]);
 
   /**
    * Fetch dashboard data from backend
@@ -29,6 +30,57 @@ function LeagueDashboard() {
       const data = await fetchDashboard(leagueId);
       setDashboardData(data);
       setError('');
+
+      // Fetch trade suggestions after dashboard loads
+      const userTeamId = data?.user_team?.team_id;
+      if (userTeamId) {
+        try {
+          // Get projected ranks from dashboard data
+          const projectedStandings = data?.projected_standings || [];
+          const myTeamProjected = projectedStandings.find(
+            t => t.team_id === userTeamId || t.espn_team_id === userTeamId
+          );
+          const projectedCategoryRanks = myTeamProjected?.projected_category_ranks || {};
+
+          // Build all teams' projected ranks map
+          const allTeamsProjectedRanks = {};
+          projectedStandings.forEach(team => {
+            const tid = team.team_id || team.espn_team_id;
+            if (tid && team.projected_category_ranks) {
+              allTeamsProjectedRanks[tid] = team.projected_category_ranks;
+            }
+          });
+
+          // Call API with projected ranks AND rosters from dashboard
+          // Passing rosters ensures we use the same z-scores as the optimizer
+          const suggestionsData = await fetchTradeSuggestions(
+            leagueId,
+            userTeamId,
+            projectedCategoryRanks,
+            allTeamsProjectedRanks,
+            data?.team_rosters || null,      // Rosters with z-scores from optimizer
+            data?.league_averages || null    // League averages for consistent z-scores
+          );
+
+          // Format suggestions to match expected structure
+          // Backend returns: target_player (string), give_player (string), target_team (string)
+          // Also has _details objects: get_player_details.name, give_player_details.name
+          const formattedSuggestions = (suggestionsData.suggestions || []).map(s => ({
+            target_team: s.target_team || s.target_team_name,
+            target_player: s.target_player || s.get_player_details?.name,
+            give_player: s.give_player || s.give_player_details?.name,
+            reason: s.reason,
+            value_gain: s.value_gain ?? s.net_z_score_change,
+            fairness_score: s.fairness_score,
+            improves_categories: s.improves_categories,
+            hurts_categories: s.hurts_categories,
+          }));
+          setTradeSuggestions(formattedSuggestions);
+        } catch (suggestionsErr) {
+          console.warn('Failed to fetch trade suggestions:', suggestionsErr);
+          setTradeSuggestions([]);
+        }
+      }
     } catch (err) {
       console.error('Error fetching dashboard:', err);
       setError(err.response?.data?.error || 'Failed to load dashboard data');
@@ -161,7 +213,10 @@ function LeagueDashboard() {
 
   // Prepare insights data for QuickInsights component
   const waiverTargets = insights.waiver_targets || [];
-  const tradeOpportunities = insights.trade_opportunities || [];
+  // Use fetched trade suggestions if available, otherwise fall back to insights
+  const tradeOpportunities = tradeSuggestions.length > 0
+    ? tradeSuggestions
+    : (insights.trade_opportunities || []);
   const categoryAnalysis = insights.category_analysis || {};
 
   // Generate category movements for Roto leagues
@@ -323,41 +378,44 @@ function LeagueDashboard() {
         </div>
       )}
 
-      {/* Main Content - Three Column Layout */}
-      <div className="dashboard-columns">
-        {/* Current Standings */}
-        <div className="dashboard-column">
-          <StandingsTable
-            standings={currentStandingsData}
-            title="Current Standings"
-            leagueType={league?.league_type || 'H2H'}
-            showOwner={false}
-            showProjected={false}
-            showProbability={false}
-            userTeamId={userTeamId}
-            categories={isRoto ? rotoCategories : null}
-          />
+      {/* Main Content - Two Column Layout (8/4 split) */}
+      <div className="dashboard-columns two-column-layout">
+        {/* Left Column: Current Standings + Projected stacked */}
+        <div className="dashboard-column-wide">
+          {/* Current Standings */}
+          <div className="dashboard-panel">
+            <StandingsTable
+              standings={currentStandingsData}
+              title="Current Standings"
+              leagueType={league?.league_type || 'H2H'}
+              showOwner={false}
+              showProjected={false}
+              showProbability={false}
+              userTeamId={userTeamId}
+              categories={isRoto ? rotoCategories : null}
+            />
+          </div>
+
+          {/* Projected Standings */}
+          <div className="dashboard-panel">
+            <StandingsTable
+              standings={projectedStandingsData}
+              title={isRoto ? 'Projected Category Ranks' : 'Projected Standings'}
+              leagueType={league?.league_type || 'H2H'}
+              showOwner={false}
+              showProjected={true}
+              showProbability={!isRoto}
+              probabilityLabel={isH2H ? 'Playoff %' : 'Win %'}
+              userTeamId={userTeamId}
+              categories={isRoto ? rotoCategories : null}
+              startLimitsEnabled={start_limits?.enabled || false}
+              irReturns={start_limits?.ir_players || []}
+            />
+          </div>
         </div>
 
-        {/* Projected Standings */}
-        <div className="dashboard-column">
-          <StandingsTable
-            standings={projectedStandingsData}
-            title={isRoto ? 'Projected Category Ranks' : 'Projected Standings'}
-            leagueType={league?.league_type || 'H2H'}
-            showOwner={false}
-            showProjected={true}
-            showProbability={!isRoto}
-            probabilityLabel={isH2H ? 'Playoff %' : 'Win %'}
-            userTeamId={userTeamId}
-            categories={isRoto ? rotoCategories : null}
-            startLimitsEnabled={start_limits?.enabled || false}
-            irReturns={start_limits?.ir_players || []}
-          />
-        </div>
-
-        {/* Quick Insights */}
-        <div className="dashboard-column">
+        {/* Right Column: Quick Insights */}
+        <div className="dashboard-column-narrow">
           <QuickInsights
             title={isRoto ? 'Roto Insights' : 'Quick Insights'}
             waiverTargets={waiverTargets}
@@ -367,6 +425,16 @@ function LeagueDashboard() {
             isRoto={isRoto}
             showMovements={isRoto}
             compact={true}
+            // Trade analyzer props
+            leagueId={parseInt(leagueId)}
+            userTeamId={userTeamId}
+            allTeams={currentStandingsData}
+            teamRosters={dashboardData?.team_rosters || {}}
+            leagueAverages={dashboardData?.league_averages || {}}
+            myCurrentRank={user_team?.current_rank || 5}
+            myCurrentRotoPoints={user_team?.roto_points || 50}
+            numTeams={league?.num_teams || currentStandingsData.length || 10}
+            showTradeAnalyzer={true}
           />
         </div>
       </div>

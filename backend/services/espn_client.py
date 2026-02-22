@@ -1374,6 +1374,19 @@ class ESPNClient:
                         for stat_id, stat_name in STAT_ID_MAP.items():
                             per_game_stats[stat_name] = float(avg.get(stat_id, 0) or 0)
 
+                    # Calculate percentage stats from components
+                    fgm = per_game_stats.get('fgm', 0)
+                    fga = per_game_stats.get('fga', 0)
+                    ftm = per_game_stats.get('ftm', 0)
+                    fta = per_game_stats.get('fta', 0)
+
+                    # Store as decimals (0.476) - will be scaled to % in z-score calculation
+                    per_game_stats['fg_pct'] = (fgm / fga) if fga > 0 else 0.0
+                    per_game_stats['ft_pct'] = (ftm / fta) if fta > 0 else 0.0
+
+                    logger.debug(f"{player_name}: FG%={per_game_stats['fg_pct']:.3f} ({fgm}/{fga}), "
+                                f"FT%={per_game_stats['ft_pct']:.3f} ({ftm}/{fta})")
+
                     slot_name = SLOT_ID_TO_NAME.get(lineup_slot_id, 'BENCH')
 
                     roster.append({
@@ -1639,6 +1652,20 @@ class ESPNClient:
         if 'current_season' not in stats:
             stats['current_season'] = {}
         stats['current_season']['games_played'] = games_played
+
+        # Calculate percentage stats from components if not already present
+        if 'fg_pct' not in per_game_stats or per_game_stats.get('fg_pct', 0) == 0:
+            fgm = per_game_stats.get('fgm', 0)
+            fga = per_game_stats.get('fga', 0)
+            per_game_stats['fg_pct'] = (fgm / fga) if fga > 0 else 0.0
+
+        if 'ft_pct' not in per_game_stats or per_game_stats.get('ft_pct', 0) == 0:
+            ftm = per_game_stats.get('ftm', 0)
+            fta = per_game_stats.get('fta', 0)
+            per_game_stats['ft_pct'] = (ftm / fta) if fta > 0 else 0.0
+
+        logger.debug(f"_parse_player {player_name}: FG%={per_game_stats.get('fg_pct', 0):.3f}, "
+                    f"FT%={per_game_stats.get('ft_pct', 0):.3f}")
 
         # IMPORTANT: Only set expected_return_date for INJURED players
         # This prevents healthy players from getting false return dates

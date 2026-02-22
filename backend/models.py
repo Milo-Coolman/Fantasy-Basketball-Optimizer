@@ -147,6 +147,12 @@ class League(db.Model):
     projection_method = db.Column(db.String(20), default='adaptive')
     flat_game_rate = db.Column(db.Float, default=0.85)  # Used when projection_method='flat_rate'
 
+    # Trade suggestion settings
+    # 'conservative': Only very fair trades (-0.5 to +0.5 z-score)
+    # 'normal': Slightly favorable trades OK (-0.25 to +1.0 z-score) - default
+    # 'aggressive': Only trades that benefit you (0.0 to +1.5 z-score)
+    trade_suggestion_mode = db.Column(db.String(20), default='normal')
+
     # Relationships
     teams = db.relationship(
         'Team',
@@ -210,6 +216,7 @@ class League(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'projection_method': self.projection_method or 'adaptive',
             'flat_game_rate': self.flat_game_rate or 0.85,
+            'trade_suggestion_mode': self.trade_suggestion_mode or 'normal',
         }
         if include_settings:
             data['roster_settings'] = self.roster_settings

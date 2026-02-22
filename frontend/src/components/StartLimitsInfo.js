@@ -96,7 +96,10 @@ function StartLimitsInfo({
       </div>
 
       {/* Position Grid */}
-      <div className="position-grid">
+      <div
+        className="position-grid"
+        style={{ '--position-count': sortedPositions.length }}
+      >
         {sortedPositions.map(([posName, data]) => {
           // Read CURRENT starts from ESPN (games_used), NOT end-of-season projected
           // Backend sends 'games_used' for current ESPN starts
@@ -114,11 +117,9 @@ function StartLimitsInfo({
             >
               <div className="position-name">{formatPositionName(posName)}</div>
               <div className="position-stats">
-                {/* Display format: "54/82 used (66%)" */}
                 <span className="used-value">{used}</span>
                 <span className="stats-separator">/</span>
                 <span className="limit-value">{limit}</span>
-                <span className="usage-pct">({Math.round(usagePct)}%)</span>
               </div>
               <div className="usage-bar-container">
                 <div

@@ -391,17 +391,6 @@ function StandingsTable({
                 const currentRank = team.current_rank || team.current_standing || team.rank || projectedRank;
                 const movement = currentRank - projectedRank;
 
-                // Count categories with high points (winning) and low points (losing)
-                let catsWinning = 0;  // 10-9 pts (top tier)
-                let catsLosing = 0;   // 5-1 pts (bottom tier)
-                rotoCategories.forEach(cat => {
-                  const catPoints = getProjectedCategoryPoints(team, cat.key);
-                  if (typeof catPoints === 'number') {
-                    if (catPoints >= totalTeams - 1) catsWinning++;  // 10-9 pts
-                    if (catPoints <= 5) catsLosing++;                 // 5-1 pts
-                  }
-                });
-
                 return (
                   <tr
                     key={team.team_id || team.id || index}
@@ -419,10 +408,6 @@ function StandingsTable({
                       <div className="team-info">
                         <span className="team-name">{team.team_name || team.name}</span>
                         {isUser && <span className="user-badge">You</span>}
-                        <span className="category-summary">
-                          <span className="cats-won" title="Categories with 10-9 pts">{catsWinning}W</span>
-                          <span className="cats-lost" title="Categories with 5-1 pts">{catsLosing}L</span>
-                        </span>
                       </div>
                     </td>
                     {rotoCategories.map(cat => {
