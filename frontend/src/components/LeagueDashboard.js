@@ -352,7 +352,8 @@ function LeagueDashboard() {
       <ProjectionSettings
         leagueId={parseInt(leagueId)}
         onSettingsChange={() => {
-          // Settings changed - user should refresh to see new projections
+          // Settings changed - automatically refresh dashboard
+          loadDashboard(true);
         }}
       />
 
@@ -435,6 +436,10 @@ function LeagueDashboard() {
             myCurrentRotoPoints={user_team?.roto_points || 50}
             numTeams={league?.num_teams || currentStandingsData.length || 10}
             showTradeAnalyzer={true}
+            onSettingsChange={() => {
+              // Trade settings changed - refresh to get new suggestions
+              loadDashboard(true);
+            }}
           />
         </div>
       </div>

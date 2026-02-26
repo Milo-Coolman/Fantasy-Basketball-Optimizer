@@ -704,6 +704,8 @@ function TradeOpportunities({
 
     try {
       await updateTradeSettings(leagueId, { trade_suggestion_mode: newMode });
+      // Close settings panel and trigger refresh
+      setShowSettings(false);
       if (onSettingsChange) {
         onSettingsChange({ trade_suggestion_mode: newMode });
       }
@@ -1095,6 +1097,7 @@ function QuickInsights({
   myCurrentRotoPoints = 50,
   numTeams = 10,
   showTradeAnalyzer = true,
+  onSettingsChange = null,
 }) {
   return (
     <div className={`quick-insights ${compact ? 'compact' : ''} ${isRoto ? 'roto-mode' : ''}`}>
@@ -1123,6 +1126,7 @@ function QuickInsights({
             myCurrentRotoPoints={myCurrentRotoPoints}
             numTeams={numTeams}
             showAnalyzer={showTradeAnalyzer}
+            onSettingsChange={onSettingsChange}
           />
         )}
 
@@ -1190,6 +1194,7 @@ QuickInsights.propTypes = {
   myCurrentRotoPoints: PropTypes.number,
   numTeams: PropTypes.number,
   showTradeAnalyzer: PropTypes.bool,
+  onSettingsChange: PropTypes.func,
 };
 
 // Export sub-components for direct use

@@ -436,19 +436,45 @@ def calculate_roto_category_ranks(
         for i, tv in enumerate(team_values, 1):
             logger.info(f"    {i}. {tv['team_name']}: {tv['value']:.2f}")
 
-        # Assign ranks and points
-        for rank, tv in enumerate(team_values, 1):
-            team_id = tv['team_id']
-            value = tv['value']
-            # Points = num_teams - rank + 1
-            # 1st place gets num_teams points, last place gets 1 point
-            points = num_teams - rank + 1
+        # Assign ranks and points WITH TIE HANDLING
+        # Teams with identical values get the average rank and average points
+        i = 0
+        while i < len(team_values):
+            current_value = team_values[i]['value']
 
-            team_ranks[team_id]['category_ranks'][stat_key] = rank
-            team_ranks[team_id]['category_values'][stat_key] = value
-            team_ranks[team_id]['category_points'][stat_key] = points
+            # Find all teams with the same value (tie group)
+            tie_group = []
+            j = i
+            while j < len(team_values) and team_values[j]['value'] == current_value:
+                tie_group.append(team_values[j])
+                j += 1
 
-            logger.debug(f"    {tv['team_name']}: rank={rank}, value={value:.2f}, points={points}")
+            # Calculate average rank for the tie group
+            # Positions are 1-indexed: if tied at positions 3,4,5 -> avg rank = 4.0
+            start_position = i + 1
+            end_position = j
+            avg_rank = (start_position + end_position) / 2.0
+
+            # Calculate average points for the tie group
+            # Points = num_teams - rank + 1 for each position, then average
+            total_points_in_group = sum(num_teams - pos + 1 for pos in range(start_position, end_position + 1))
+            avg_points = total_points_in_group / len(tie_group)
+
+            # Assign average rank and points to all teams in tie group
+            for tv in tie_group:
+                team_id = tv['team_id']
+                value = tv['value']
+
+                team_ranks[team_id]['category_ranks'][stat_key] = avg_rank
+                team_ranks[team_id]['category_values'][stat_key] = value
+                team_ranks[team_id]['category_points'][stat_key] = avg_points
+
+                if len(tie_group) > 1:
+                    logger.debug(f"    {tv['team_name']}: rank={avg_rank:.1f} (TIE), value={value:.2f}, points={avg_points:.1f}")
+                else:
+                    logger.debug(f"    {tv['team_name']}: rank={int(avg_rank)}, value={value:.2f}, points={avg_points:.1f}")
+
+            i = j
 
     # Step 3: Calculate total points for each team
     logger.info(f"\n--- Total Points Calculation ---")
@@ -1678,7 +1704,8 @@ def calculate_projected_roto_standings(
                 ros_val = ros_totals.get(stat_key, 0) or 0
                 # For percentage stats, we'll recalculate from makes/attempts below
                 if stat_key not in ['FG%', 'FT%']:
-                    eos_totals[stat_key] = current_val + ros_val
+                    # Round counting stats to whole numbers (no decimal STL, BLK, etc.)
+                    eos_totals[stat_key] = round(current_val + ros_val)
 
             # Calculate EOS percentage stats: (current_makes + ros_makes) / (current_attempts + ros_attempts)
             ros_fgm = ros_totals.get('FGM', 0) or 0
@@ -1691,10 +1718,12 @@ def calculate_projected_roto_standings(
             eos_ftm = current_ftm + ros_ftm
             eos_fta = current_fta + ros_fta
 
-            eos_totals['FGM'] = eos_fgm
-            eos_totals['FGA'] = eos_fga
-            eos_totals['FTM'] = eos_ftm
-            eos_totals['FTA'] = eos_fta
+            # Round makes/attempts to whole numbers
+            eos_totals['FGM'] = round(eos_fgm)
+            eos_totals['FGA'] = round(eos_fga)
+            eos_totals['FTM'] = round(eos_ftm)
+            eos_totals['FTA'] = round(eos_fta)
+            # Percentages stay as decimals
             eos_totals['FG%'] = eos_fgm / eos_fga if eos_fga > 0 else 0.45
             eos_totals['FT%'] = eos_ftm / eos_fta if eos_fta > 0 else 0.78
 
@@ -1716,11 +1745,16 @@ def calculate_projected_roto_standings(
             eos_totals = {}
             for cat in categories:
                 stat_key = cat['stat_key']
-                eos_totals[stat_key] = espn_current_totals.get(stat_key, 0) or 0
-            eos_totals['FGM'] = current_fgm
-            eos_totals['FGA'] = current_fga
-            eos_totals['FTM'] = current_ftm
-            eos_totals['FTA'] = current_fta
+                val = espn_current_totals.get(stat_key, 0) or 0
+                # Round counting stats, keep percentages as decimals
+                if stat_key not in ['FG%', 'FT%']:
+                    eos_totals[stat_key] = round(val)
+                else:
+                    eos_totals[stat_key] = val
+            eos_totals['FGM'] = round(current_fgm)
+            eos_totals['FGA'] = round(current_fga)
+            eos_totals['FTM'] = round(current_ftm)
+            eos_totals['FTA'] = round(current_fta)
             start_limit_info = {'available': False, 'reason': 'no_roster'}
             player_projections = []  # No player projections
 
@@ -1808,23 +1842,46 @@ def calculate_projected_roto_standings(
         logger.info(f"    Rank | Team                   | Current    | EOS Proj   | Roto Pts")
         logger.info(f"    " + "-" * 65)
 
-        for rank, tv in enumerate(team_values, 1):
-            team_id = tv['team_id']
-            roto_points = num_teams - rank + 1
+        # Assign ranks and points WITH TIE HANDLING
+        i = 0
+        while i < len(team_values):
+            current_value = team_values[i]['value']
 
-            # Store rank and points
-            team_projected_ranks[team_id]['category_ranks'][stat_key] = rank
-            team_projected_ranks[team_id]['category_points'][stat_key] = roto_points
+            # Find all teams with the same value (tie group)
+            tie_group = []
+            j = i
+            while j < len(team_values) and team_values[j]['value'] == current_value:
+                tie_group.append(team_values[j])
+                j += 1
 
-            # Log the ranking
-            team_name_display = tv['team_name'][:22]
-            current_val = tv['current_value']
-            eos_val = tv['value']
+            # Calculate average rank for the tie group
+            start_position = i + 1
+            end_position = j
+            avg_rank = (start_position + end_position) / 2.0
 
-            if stat_key in ['FG%', 'FT%']:
-                logger.info(f"    {rank:>4} | {team_name_display:<22} | {current_val:>10.3f} | {eos_val:>10.3f} | {roto_points:>8}")
-            else:
-                logger.info(f"    {rank:>4} | {team_name_display:<22} | {current_val:>10.0f} | {eos_val:>10.0f} | {roto_points:>8}")
+            # Calculate average points for the tie group
+            total_points_in_group = sum(num_teams - pos + 1 for pos in range(start_position, end_position + 1))
+            avg_points = total_points_in_group / len(tie_group)
+
+            # Assign average rank and points to all teams in tie group
+            for tv in tie_group:
+                team_id = tv['team_id']
+                team_projected_ranks[team_id]['category_ranks'][stat_key] = avg_rank
+                team_projected_ranks[team_id]['category_points'][stat_key] = avg_points
+
+                # Log the ranking
+                team_name_display = tv['team_name'][:22]
+                current_val = tv['current_value']
+                eos_val = tv['value']
+                rank_display = f"{avg_rank:.1f}" if len(tie_group) > 1 else f"{int(avg_rank)}"
+                points_display = f"{avg_points:.1f}" if len(tie_group) > 1 else f"{int(avg_points)}"
+
+                if stat_key in ['FG%', 'FT%']:
+                    logger.info(f"    {rank_display:>4} | {team_name_display:<22} | {current_val:>10.3f} | {eos_val:>10.3f} | {points_display:>8}")
+                else:
+                    logger.info(f"    {rank_display:>4} | {team_name_display:<22} | {current_val:>10.0f} | {eos_val:>10.0f} | {points_display:>8}")
+
+            i = j
 
         logger.info("")
 

@@ -79,9 +79,10 @@ fantasy-basketball-optimizer/
 │   │   ├── statistical_model.py    # Statistical projection model
 │   │   ├── hybrid_engine.py        # Combined projection engine
 │   │   └── trained_models/         # Pre-trained model files
-│   ├── analyzers/
+│   ├── analysis/
 │   │   ├── __init__.py
-│   │   ├── trade_analyzer.py       # Trade impact analysis
+│   │   ├── trade_analyzer.py       # Z-score based trade analysis
+│   │   ├── trade_suggestions.py    # Trade suggestion generator
 │   │   ├── waiver_recommender.py   # Waiver wire recommendations
 │   │   └── matchup_analyzer.py     # H2H matchup projections
 │   ├── scrapers/
@@ -107,12 +108,15 @@ fantasy-basketball-optimizer/
 │   │   │   ├── Login.js
 │   │   │   ├── Register.js
 │   │   │   ├── LeagueSetup.js
-│   │   │   ├── Dashboard.js
+│   │   │   ├── LeagueDashboard.js   # Main dashboard with all sections
 │   │   │   ├── StandingsTable.js
 │   │   │   ├── ProjectionsChart.js
-│   │   │   ├── TradeAnalyzer.js
+│   │   │   ├── CategoryComparisonChart.js
+│   │   │   ├── QuickInsights.js     # Trade opportunities, waiver targets
+│   │   │   ├── ProjectionSettings.js
+│   │   │   ├── StartLimitsInfo.js   # Roto start limit display
 │   │   │   ├── WaiverRecommendations.js
-│   │   │   ├── WeeklyMatchups.js   # H2H only
+│   │   │   ├── WeeklyMatchups.js    # H2H only
 │   │   │   └── PlayerCard.js
 │   │   ├── services/
 │   │   │   └── api.js              # API service layer
@@ -534,36 +538,111 @@ both players benched or assigned to alternate positions (G/UTIL).
 
 ### 3.5 Trade Analyzer
 
+The trade analyzer uses the same z-score value system as the start limit optimizer (see Section 3.3.11) for consistent player evaluation across all features.
+
 **3.5.1 Trade Input Interface**
-- Select user's team and trade partner
+- Select user's team and trade partner from dropdown
 - Multi-player selection (any size trade, no limit)
 - Support for 2-team trades only (no multi-team packages)
-- Visual trade builder with drag-and-drop
+- Visual trade builder with checkbox roster selection
+- Player z-score values displayed for quick reference
+- Analysis shown from user's perspective
 
-**3.5.2 Trade Impact Analysis**
-- **Pre-trade vs Post-trade comparison:**
-  - Category value changes for both teams
-  - Win probability impact (H2H) or rank impact (Roto)
-  - Roster balance changes
-- **Fairness assessment:**
-  - Value differential calculation
-  - Win-win vs lopsided trade indicator
-- **League impact:**
-  - How trade affects league standings
-  - Playoff implications
+**3.5.2 Z-Score Based Trade Analysis**
 
-**3.5.3 Trade Recommendations**
-- AI-generated trade suggestions based on:
-  - Team needs (weak categories)
-  - Trade partner surpluses (strong categories)
-  - Overall value optimization
-- Ranked list of trade targets
-- 1-for-1, 2-for-2, 3-for-3 suggestions
-- "Trade value" score for each player
+The analyzer calculates trade value using per-game z-scores:
 
-**3.5.4 Trade History**
-- Log of analyzed trades
-- Track suggested vs accepted trades
+**Net Z-Score Change:**
+```
+net_z_change = sum(z_scores of players_received) - sum(z_scores of players_given)
+```
+- Positive value = trade benefits you
+- Negative value = trade hurts you
+- Example: Give Pritchard (-1.40) for Chet (+1.40) = +2.80 net gain
+
+**Category Impact Analysis:**
+For each scoring category, calculates z-score difference:
+- If difference > +0.3: Category marked as "IMPROVES"
+- If difference < -0.3: Category marked as "HURTS"
+- Otherwise: Neutral (no significant impact)
+
+**Technical Notes:**
+- Only analyzes league-specific scoring categories (from league settings)
+- FG% and FT% calculated from components (FGM/FGA, FTM/FTA)
+- Percentage stats scaled from decimals (0.476) to percentages (47.6) before z-score calculation
+- Turnovers sign-flipped (lower TO = positive z-score)
+
+**3.5.3 Trade Evaluation Output**
+
+**Fairness Score:** -10 to +10 scale
+- Based on z-score value differential between sides
+- 0 = perfectly fair trade
+- Positive = favors you, Negative = favors trade partner
+
+**Recommendation Engine:**
+| Net Z-Score | Recommendation |
+|-------------|----------------|
+| > +1.0 | ACCEPT (clearly beneficial) |
+| +0.3 to +1.0 | CONSIDER (slight advantage) |
+| -0.3 to +0.3 | COUNTER (roughly fair) |
+| < -0.3 | REJECT (hurts your team) |
+
+**Trade Grading:** Letter grade based on overall value
+- A+ to A: Excellent trade (significant z-score gain)
+- B+ to B: Good trade (moderate gain)
+- C: Fair trade (roughly even)
+- D to F: Poor trade (you lose value)
+
+**3.5.4 Trade Suggestions Generator**
+
+Auto-generates trade opportunities based on projected category weaknesses.
+
+**Algorithm:**
+1. **Identify Weak Categories:** Uses projected ranks (not current) from dashboard
+   - Weak = projected rank >= 6 in 10-team league
+   - Dynamically adjusts threshold based on league size
+2. **Find Strong Partners:** Identifies teams ranked 1-3 in your weak categories
+3. **Search for Matches:** For each weak category:
+   - Find partner players strong in that category (z > +0.5)
+   - Find your players to offer (similar overall z-score)
+   - Check trade fairness (z-score diff < 1.5)
+4. **Filter by Mode:** Apply aggressiveness filter
+5. **Rank Results:** Sort by net z-score gain
+
+**Configurable Aggressiveness Modes:**
+
+Users can configure trade suggestion filtering via inline settings panel:
+
+| Mode | Z-Score Range | Use Case |
+|------|---------------|----------|
+| Conservative | -0.5 to +0.5 | Only very fair, balanced trades. Good for league harmony. |
+| Normal (default) | -0.25 to +1.0 | Slightly favorable trades acceptable. Balanced approach. |
+| Aggressive | 0.0 to +1.5 | Only trades that benefit you. Win-now mentality. |
+
+**Settings Storage:**
+- `trade_suggestion_mode` field in League model
+- Persists per league
+- Settings UI integrated into Trade Opportunities section header
+
+**3.5.5 Trade Opportunities UI**
+
+**Display:**
+- Shows trade target (player to receive) and trade piece (player to give)
+- Partner team name
+- Reason explaining the trade rationale
+- Improves/Hurts category chips with color coding
+- Net z-score value gain badge
+
+**Features:**
+- Expandable list (show 2 by default, expand to see all)
+- Inline settings panel (toggle via gear icon)
+- "Analyze Trade" button opens full trade analyzer modal
+- Auto-refresh when settings change
+
+**3.5.6 Trade History**
+- Log of analyzed trades stored in Trade_History table
+- Tracks: teams involved, players exchanged, z-score differential
+- Records whether trade was suggested by system
 - Use data to improve recommendations over time
 
 ### 3.6 Waiver Wire Recommendations
@@ -1485,22 +1564,80 @@ The primary projection approach uses the tiered weighting system documented in S
 
 ---
 
-## 17. Conclusion
+## 17. Bug Fixes & Recent Improvements (February 2026)
+
+### 17.1 Bug Fixes
+
+**Tie Handling in Roto Rankings**
+- **Issue:** Two teams tied in a category would get different ranks (e.g., 5 and 6) instead of sharing
+- **Fix:** Updated ranking logic to calculate average ranks for ties
+- **Impact:** Teams with identical stats now correctly receive average rank (e.g., tied for 3rd = rank 3.5, resulting in 7.5 Roto points each). Works for N-way ties (2, 3, 4+ teams)
+- **Files:** `backend/api/dashboard.py` - `calculate_roto_category_ranks()` and projected standings ranking
+
+**Counting Stats Rounding**
+- **Issue:** STL and BLK projected stats showed decimals (e.g., 142.37) while other counting stats were rounded
+- **Fix:** Added `round()` to all counting stats in EOS totals calculation
+- **Impact:** All counting stats (PTS, REB, AST, STL, BLK, 3PM, TO, FGM, FGA, FTM, FTA) display as whole numbers; percentages (FG%, FT%) remain as decimals
+- **Files:** `backend/api/dashboard.py` - EOS totals calculation
+
+**FG%/FT% Z-Score Calculation**
+- **Issue:** FG% and FT% showing 0.000 z-scores for all players in trade analyzer
+- **Fix:** Added percentage calculation from components (FGM/FGA, FTM/FTA) in ESPN client
+- **Impact:** Percentage stats now correctly influence trade analysis and suggestions
+- **Files:** `backend/services/espn_client.py` - `get_all_rosters()` and `_parse_player()`
+
+**Trade Settings Refresh**
+- **Issue:** Trade suggestion mode changes required manual page refresh to take effect
+- **Fix:** Added `onSettingsChange` callback properly passed through component hierarchy
+- **Impact:** Dashboard automatically refreshes when trade settings change
+- **Files:** `frontend/src/components/QuickInsights.js`, `frontend/src/components/LeagueDashboard.js`
+
+### 17.2 Recent Improvements
+
+**Stats View Toggle in Standings Tables**
+- Added dropdown to switch between "Roto Points" and "Actual Stats" views
+- Stats view shows actual stat values (e.g., PTS: 10,593, FG%: 47.6%)
+- Preserves color coding from Roto points (green/yellow/red tiers)
+- Total column always shows Roto points sum (not stats sum)
+- Move column preserved in projected standings
+- Tooltips show stat value, rank, and points for context
+
+**Auto-Refresh on Settings Change**
+- Dashboard automatically refreshes when projection settings are saved
+- Dashboard automatically refreshes when trade suggestion mode is changed
+- Settings panels auto-collapse after successful save
+- Loading indicator shown during refresh
+
+**Trade Analyzer Enhancements**
+- Fixed percentage category detection to use league-specific categories
+- Improved z-score calculations for all stat types
+- Added detailed logging for debugging trade suggestions
+
+---
+
+## 18. Conclusion
 
 The Fantasy Basketball Optimizer is a comprehensive web application that combines data science, machine learning, and web development to provide actionable insights for fantasy basketball managers. By integrating with ESPN Fantasy Basketball and leveraging external data sources, the app delivers accurate projections, intelligent trade recommendations, and optimized waiver wire suggestions.
 
 The project is structured for iterative development with clear phases, allowing for incremental feature delivery and continuous testing. With a focus on user experience, performance, and accuracy, this app has the potential to become an essential tool for serious fantasy basketball players.
 
+**Current State (February 2026):**
+- Trade analyzer and suggestions fully functional
+- All major z-score inconsistencies resolved
+- Dashboard UI polished with responsive settings
+- Roto standings calculations accurate with proper tie handling
+
 **Next Steps:**
-1. Review and approve this PRD
-2. Set up development environment
-3. Begin Phase 1 development (Foundation)
-4. Regular check-ins to track progress and adjust priorities
+1. Waiver Wire Analyzer implementation
+2. Advanced Trade Features (multi-player trade evaluation)
+3. H2H matchup analysis improvements
+4. Historical Performance Tracking
+5. Mobile responsive design refinements
 
 ---
 
-**Document Version:** 1.2
-**Last Updated:** February 19, 2026
-**Changes:** Added Z-Score Value System (3.3.11), simplified IR Drop Optimizer (3.3.8)
+**Document Version:** 1.3
+**Last Updated:** February 26, 2026
+**Changes:** Added Bug Fixes section (17.1), Recent Improvements (17.2), updated Current State
 **Author:** Milo (with Claude)
 **Status:** Active Development

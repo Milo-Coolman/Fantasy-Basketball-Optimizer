@@ -68,9 +68,10 @@ fantasy-basketball-optimizer/
 │   │   ├── statistical_model.py    # Statistical projection model
 │   │   ├── hybrid_engine.py        # Combined projection engine
 │   │   └── trained_models/         # Pre-trained model files
-│   ├── analyzers/
+│   ├── analysis/
 │   │   ├── __init__.py
-│   │   ├── trade_analyzer.py       # Trade impact analysis
+│   │   ├── trade_analyzer.py       # Z-score based trade analysis
+│   │   ├── trade_suggestions.py    # Trade suggestion generator
 │   │   ├── waiver_recommender.py   # Waiver wire recommendations
 │   │   └── matchup_analyzer.py     # H2H matchup projections
 │   ├── scrapers/
@@ -96,12 +97,15 @@ fantasy-basketball-optimizer/
 │   │   │   ├── Login.js
 │   │   │   ├── Register.js
 │   │   │   ├── LeagueSetup.js
-│   │   │   ├── Dashboard.js
+│   │   │   ├── LeagueDashboard.js   # Main dashboard with all sections
 │   │   │   ├── StandingsTable.js
 │   │   │   ├── ProjectionsChart.js
-│   │   │   ├── TradeAnalyzer.js
+│   │   │   ├── CategoryComparisonChart.js
+│   │   │   ├── QuickInsights.js     # Trade opportunities, waiver targets
+│   │   │   ├── ProjectionSettings.js
+│   │   │   ├── StartLimitsInfo.js   # Roto start limit display
 │   │   │   ├── WaiverRecommendations.js
-│   │   │   ├── WeeklyMatchups.js   # H2H only
+│   │   │   ├── WeeklyMatchups.js    # H2H only
 │   │   │   └── PlayerCard.js
 │   │   ├── services/
 │   │   │   └── api.js              # API service layer
@@ -249,10 +253,53 @@ per_game_value = sum(z_scores for all categories)
 - Fair comparison: 25 PTS and 2.5 BLK compared on same scale
 - No manual tuning required
 
-### 8. Trade Analyzer
-- Input: Multi-player trades (any size, 2 teams only)
-- Output: Pre/post trade comparison, category value changes, win probability impact, fairness assessment
-- AI-generated trade suggestions based on team needs
+### 8. Trade Analyzer (Z-Score Based)
+
+The trade analyzer uses the same z-score value system as the start limit optimizer for consistent player evaluation.
+
+**Trade Analysis Features:**
+- **Input:** Multi-player trades (any size, 2 teams only)
+- **Z-Score Comparison:** Calculates net z-score change from user's perspective
+  - Formula: `net_z_change = (players_received_z) - (players_given_z)`
+  - Positive = trade benefits you, Negative = trade hurts you
+- **Category Impact Analysis:** Shows which categories improve/hurt
+  - Uses 0.3 z-score threshold for significance
+  - Separate display for improvements (green) and concerns (red)
+- **Fairness Scoring:** -10 to +10 scale based on value differential
+- **Recommendation Engine:** ACCEPT / REJECT / CONSIDER / COUNTER
+- **Trade Grading:** A+, A, B+, B, C, D, F based on overall value
+
+**Technical Details:**
+- Only analyzes league-specific scoring categories (not hardcoded defaults)
+- FG% and FT% calculated from components (FGM/FGA, FTM/FTA)
+- Percentage stats scaled to 0-100 before z-score calculation
+
+### 8.1 Trade Suggestions Generator
+
+Auto-generates trade opportunities based on projected category weaknesses.
+
+**Algorithm:**
+1. Identifies user's weak categories (projected rank >= 6 in 10-team league)
+2. Finds teams strong in those categories (rank <= 3)
+3. Searches for fair 1-for-1 trade matches (z-score diff < 1.5)
+4. Filters by configurable aggressiveness mode
+5. Returns ranked suggestions with category impact breakdown
+
+**Configurable Aggressiveness Modes:**
+| Mode | Z-Score Range | Description |
+|------|---------------|-------------|
+| Conservative | -0.5 to +0.5 | Only very fair, balanced trades |
+| Normal | -0.25 to +1.0 | Slightly favorable trades OK (default) |
+| Aggressive | 0.0 to +1.5 | Only trades that benefit you |
+
+**Database:**
+- `trade_suggestion_mode` field added to League model
+- Stored per league, persists user preference
+
+**UI Integration:**
+- Inline settings panel within Trade Opportunities section
+- Auto-saves on mode change
+- Settings accessible via gear icon in section header
 
 ### 9. Waiver Wire Recommendations
 - Ranked list of available free agents
@@ -271,6 +318,21 @@ per_game_value = sum(z_scores for all categories)
 ---
 
 ## Key Bug Fixes (February 2026)
+
+### Tie Handling in Roto Rankings (NEW)
+- **Issue:** Two teams tied in a category would get different ranks (e.g., 5 and 6) instead of sharing
+- **Fix:** Updated `calculate_roto_category_ranks` and projected standings to use average ranks for ties
+- **Impact:** Teams with identical stats now correctly receive average rank (e.g., tied for 3rd = rank 3.5, 7.5 Roto points each). Works for N-way ties (2, 3, 4+ teams)
+
+### Counting Stats Rounding (NEW)
+- **Issue:** STL and BLK projected stats showed decimals (e.g., 142.37) while other counting stats were rounded
+- **Fix:** Added `round()` to all counting stats in EOS totals calculation (PTS, REB, AST, STL, BLK, 3PM, TO, FGM, FGA, FTM, FTA)
+- **Impact:** All counting stats display as whole numbers; percentages (FG%, FT%) remain as decimals
+
+### FG%/FT% Z-Score Calculation (NEW)
+- **Issue:** FG% and FT% showing 0.000 z-scores for all players in trade analyzer
+- **Fix:** Added percentage calculation from components (FGM/FGA, FTM/FTA) in `espn_client.py` for both `get_all_rosters()` and `_parse_player()`
+- **Impact:** Percentage stats now correctly influence trade analysis and suggestions
 
 ### Phantom Injuries Removed
 - **Issue:** Players were being marked as injured without ESPN reporting an injury
@@ -351,6 +413,64 @@ worst_player = candidates[0]  # Lowest z-score = best to drop
 - Category balancing adds complexity without clear benefit
 - Users can manually identify weak categories from dashboard
 
+### Trade Analyzer & Suggestions (February 2026)
+**Status:** Fully implemented
+
+**Trade Analyzer:**
+- Z-score based trade evaluation matching start limit optimizer values
+- Category-by-category impact analysis (improves/hurts breakdown)
+- Uses league-specific scoring categories only (not hardcoded defaults)
+- FG% and FT% properly calculated from FGM/FGA and FTM/FTA components
+- Fairness scoring, recommendation engine, and trade grading
+
+**Trade Suggestions Generator:**
+- Auto-generates trade opportunities based on projected category weaknesses
+- Uses projected ranks from dashboard (not current ranks)
+- Configurable aggressiveness modes (conservative/normal/aggressive)
+- Inline settings panel integrated into Trade Opportunities section
+- Database migration added `trade_suggestion_mode` to League model
+
+**Key Files:**
+- `backend/analysis/trade_analyzer.py` - TradeAnalyzer class, TradePlayer dataclass
+- `backend/analysis/trade_suggestions.py` - TradeSuggestionGenerator class
+- `backend/api/trades.py` - API endpoints for trade analysis and suggestions
+- `frontend/src/components/QuickInsights.js` - TradeOpportunities with inline settings
+
+**Deferred Features:**
+- Trade projected standings calculation (scrapped - z-score only approach is simpler and faster)
+- Multi-team trade packages (too complex for now)
+- Keeper league considerations (deferred)
+
+### Stats View Toggle in Standings Tables (February 2026)
+**Status:** Implemented
+
+**Feature:**
+- Dropdown toggle to switch between "Roto Points" and "Actual Stats" views
+- Stats view shows actual stat values (e.g., PTS: 10,593, FG%: 47.6%)
+- Preserves color coding from Roto points (green/yellow/red tiers)
+- Total column always shows Roto points sum (not stats sum)
+- Move column preserved in projected standings
+- Tooltips show stat value, rank, and points for context
+
+**Key Files:**
+- `frontend/src/components/StandingsTable.js` - viewMode state, formatStat helper
+- `frontend/src/styles/App.css` - .view-mode-select, .standings-header-row styles
+
+### Auto-Refresh on Settings Change (February 2026)
+**Status:** Implemented
+
+**Feature:**
+- Dashboard automatically refreshes when projection settings are saved
+- Dashboard automatically refreshes when trade suggestion mode is changed
+- Settings panels auto-collapse after successful save
+- Loading indicator shown during refresh
+
+**Implementation:**
+- `onSettingsChange` callback passed from LeagueDashboard to settings components
+- Calls `loadDashboard(true)` to trigger full data refresh
+- ProjectionSettings shows "Refreshing projections..." message
+- TradeOpportunities settings panel closes and triggers refresh
+
 ---
 
 ## Database Schema (Key Tables)
@@ -366,6 +486,7 @@ worst_player = candidates[0]  # Lowest z-score = best to drop
 - last_updated, refresh_schedule
 - projection_method ("adaptive" or "flat_rate")
 - flat_rate_value (decimal, 0.0-1.0)
+- trade_suggestion_mode ("conservative", "normal", "aggressive")
 
 ### Teams
 - id, league_id, espn_team_id, team_name, owner_name
@@ -672,7 +793,7 @@ npm run build
 
 ## Current Status
 
-**Phase:** Phase 3 - Projection Engine (In Progress)
+**Phase:** Phase 4 - Core Features (Nearing Completion)
 **Completed:**
 - Project structure and Flask backend
 - SQLite database with migrations (Flask-Migrate)
@@ -681,12 +802,30 @@ npm run build
 - Projection method settings (adaptive/flat rate)
 - Schedule-based remaining games calculation
 - Start limit optimizer with projected_games enforcement
+- Z-score value system implementation
+- Trade analyzer with category impact analysis
+- Trade suggestions generator with configurable aggressiveness
+- Dashboard with standings, projections, quick insights
+- Trade Opportunities section with inline settings
+- Category analysis (strengths/weaknesses)
+- Stats/Points view toggle in standings tables
+- Auto-refresh on settings change
+- Tie handling for Roto category rankings
+- Counting stats rounding (STL, BLK, etc.)
+- FG%/FT% z-score fixes in trade analyzer
+
+**Current State:**
+- Trade analyzer and suggestions fully functional
+- All major z-score inconsistencies resolved
+- Dashboard UI polished with responsive settings
+- Roto standings calculations are accurate with proper tie handling
 
 **Next Steps:**
-1. Complete hybrid projection engine
-2. Build trade analyzer logic
-3. Create waiver wire recommendation algorithm
-4. Build React frontend components
+1. Waiver Wire Analyzer (next priority)
+2. Advanced Trade Features (multi-player trade evaluation)
+3. H2H matchup analysis improvements
+4. Historical Performance Tracking
+5. Mobile responsive design refinements
 
 ---
 
@@ -702,5 +841,5 @@ npm run build
 
 ---
 
-**Last Updated:** February 19, 2026
-**Version:** 1.3 (Z-Score Value System & IR Drop Optimizer Simplification)
+**Last Updated:** February 26, 2026
+**Version:** 1.5 (Bug Fixes, Stats View Toggle, Auto-Refresh)

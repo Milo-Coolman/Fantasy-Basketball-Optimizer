@@ -67,10 +67,12 @@ function ProjectionSettings({ leagueId, onSettingsChange }) {
 
     try {
       await updateProjectionSettings(leagueId, settings);
-      setSuccess('Settings saved! Refresh projections to apply.');
+      setSuccess('Settings saved! Refreshing projections...');
       if (onSettingsChange) {
         onSettingsChange(settings);
       }
+      // Collapse panel after successful save
+      setTimeout(() => setIsExpanded(false), 1500);
     } catch (err) {
       console.error('Error saving settings:', err);
       setError(err.response?.data?.error || 'Failed to save settings');

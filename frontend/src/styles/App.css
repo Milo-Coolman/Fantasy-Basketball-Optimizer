@@ -1949,6 +1949,67 @@ a:hover {
   border-bottom: 1px solid var(--border-color);
 }
 
+/* Standings Header Row - title + view mode toggle */
+.standings-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.standings-header-row .standings-title {
+  border-bottom: none;
+  flex: 1;
+}
+
+/* View Mode Select Dropdown */
+.view-mode-select {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding-right: var(--spacing-md);
+}
+
+.view-mode-dropdown {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 6px 28px 6px 10px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.view-mode-dropdown:hover {
+  background-color: var(--bg-card);
+  border-color: var(--color-primary);
+}
+
+.view-mode-dropdown:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.view-mode-select svg {
+  position: absolute;
+  right: calc(var(--spacing-md) + 8px);
+  pointer-events: none;
+  color: var(--text-secondary);
+}
+
+/* Stats View Cell Styling - inherits color classes from points-top/middle/bottom */
+.col-category.stats-view .category-stat {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
+
 .standings-table-wrapper {
   overflow-x: auto;
 }
@@ -2417,7 +2478,8 @@ a:hover {
   background-color: rgba(16, 185, 129, 0.2);
 }
 
-.col-category.points-top .category-points {
+.col-category.points-top .category-points,
+.col-category.points-top .category-stat {
   color: var(--color-success);
   font-weight: 700;
 }
@@ -2427,7 +2489,8 @@ a:hover {
   background-color: rgba(245, 158, 11, 0.15);
 }
 
-.col-category.points-middle .category-points {
+.col-category.points-middle .category-points,
+.col-category.points-middle .category-stat {
   color: var(--color-warning);
   font-weight: 600;
 }
@@ -2437,7 +2500,8 @@ a:hover {
   background-color: rgba(239, 68, 68, 0.15);
 }
 
-.col-category.points-bottom .category-points {
+.col-category.points-bottom .category-points,
+.col-category.points-bottom .category-stat {
   color: var(--color-error);
   font-weight: 500;
 }

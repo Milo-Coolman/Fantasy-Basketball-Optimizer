@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 
 /**
@@ -35,6 +35,50 @@ const getCategoryPointsClass = (points, totalTeams) => {
   if (points >= maxPoints - 4) return 'points-middle';   // 8-6 (3rd-5th place) - YELLOW
   return 'points-bottom';                                 // 5-1 (6th-10th place) - RED
 };
+
+/**
+ * Format stat value for display
+ * Percentage stats (FG%, FT%) show as percentages
+ * Counting stats show with thousands separator for large numbers
+ *
+ * @param {number} value - Raw stat value
+ * @param {string} categoryKey - Category key (e.g., 'fg_pct', 'pts', 'reb')
+ * @returns {string} Formatted stat string
+ */
+const formatStat = (value, categoryKey) => {
+  if (value === null || value === undefined || value === '—') return '—';
+  if (typeof value !== 'number') return String(value);
+
+  // Percentage stats - stored as decimals (0.476) or already as percentages (47.6)
+  const pctCategories = ['fg_pct', 'ft_pct', 'fg%', 'ft%', 'fgpct', 'ftpct'];
+  const key = categoryKey.toLowerCase();
+
+  if (pctCategories.includes(key)) {
+    // If value is less than 1, it's stored as decimal (0.476 -> 47.6%)
+    const pctValue = value < 1 ? value * 100 : value;
+    return `${pctValue.toFixed(1)}%`;
+  }
+
+  // Counting stats - show with thousands separator for large numbers
+  if (value >= 1000) {
+    return value.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  }
+
+  // Smaller counting stats - show as-is or with 1 decimal if needed
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+  return value.toFixed(1);
+};
+
+/**
+ * View mode select dropdown icon
+ */
+const ChevronDown = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+);
 
 /**
  * StandingsTable - Reusable component for displaying league standings
@@ -77,6 +121,9 @@ function StandingsTable({
   startLimitsEnabled = false, // Show start limits indicator
   irReturns = [], // IR player returns to highlight
 }) {
+  // View mode state for Roto tables: 'points' or 'stats'
+  const [viewMode, setViewMode] = useState('points');
+
   const isRoto = leagueType.toUpperCase().includes('ROTO');
   const rotoCategories = categories || [];
   const totalTeams = standings.length;
@@ -147,6 +194,15 @@ function StandingsTable({
   };
 
   /**
+   * Get actual stat VALUE for a team (raw stat total)
+   * e.g., PTS: 10,593, REB: 3,421, FG%: 47.6%
+   */
+  const getCategoryValue = (team, categoryKey) => {
+    const value = team.category_values?.[categoryKey];
+    return value !== undefined && value !== null ? value : '—';
+  };
+
+  /**
    * Get category RANK for tooltip (1 = best, 10 = worst)
    */
   const getCategoryRank = (team, categoryKey) => {
@@ -213,11 +269,24 @@ function StandingsTable({
     );
   }
 
-  // Render Roto CURRENT standings table - showing POINTS in each category
+  // Render Roto CURRENT standings table - showing POINTS or STATS based on viewMode
   if (isRoto && !showProjected) {
     return (
       <div className={`standings-table-container roto ${compact ? 'compact' : ''}`}>
-        {title && <h3 className="standings-title">{title}</h3>}
+        <div className="standings-header-row">
+          {title && <h3 className="standings-title">{title}</h3>}
+          <div className="view-mode-select">
+            <select
+              value={viewMode}
+              onChange={(e) => setViewMode(e.target.value)}
+              className="view-mode-dropdown"
+            >
+              <option value="points">Roto Points</option>
+              <option value="stats">Actual Stats</option>
+            </select>
+            <ChevronDown />
+          </div>
+        </div>
         <div className="standings-table-wrapper">
           <table className="standings-table roto-table">
             <thead>
@@ -257,25 +326,43 @@ function StandingsTable({
                       </div>
                     </td>
                     {rotoCategories.map(cat => {
-                      // Get POINTS (10 for 1st, 9 for 2nd, etc.) - NOT rank
+                      // Get Roto points for color coding (used in both views)
                       const catPoints = getCategoryPoints(team, cat.key);
                       const catRank = getCategoryRank(team, cat.key);
                       const pointsClass = typeof catPoints === 'number'
                         ? getCategoryPointsClass(catPoints, totalTeams)
                         : '';
 
-                      // Build tooltip showing rank
-                      const tooltip = catRank
-                        ? `${cat.label}: Rank ${catRank} = ${catPoints} pts`
-                        : cat.label;
+                      if (viewMode === 'stats') {
+                        // Stats view: show actual stat values WITH color coding
+                        const catValue = getCategoryValue(team, cat.key);
 
-                      return (
-                        <td key={cat.key} className={`col-category ${pointsClass}`}>
-                          <span className="category-points" title={tooltip}>
-                            {catPoints}
-                          </span>
-                        </td>
-                      );
+                        // Build tooltip showing rank and points
+                        const tooltip = catRank
+                          ? `${cat.label}: ${formatStat(catValue, cat.key)} (Rank ${catRank} = ${catPoints} pts)`
+                          : cat.label;
+
+                        return (
+                          <td key={cat.key} className={`col-category stats-view ${pointsClass}`}>
+                            <span className="category-stat" title={tooltip}>
+                              {formatStat(catValue, cat.key)}
+                            </span>
+                          </td>
+                        );
+                      } else {
+                        // Points view: show Roto points (10 for 1st, 9 for 2nd, etc.)
+                        const tooltip = catRank
+                          ? `${cat.label}: Rank ${catRank} = ${catPoints} pts`
+                          : cat.label;
+
+                        return (
+                          <td key={cat.key} className={`col-category ${pointsClass}`}>
+                            <span className="category-points" title={tooltip}>
+                              {catPoints}
+                            </span>
+                          </td>
+                        );
+                      }
                     })}
                     <td className="col-total">
                       <span className="total-points">{getTotalPoints(team)}</span>
@@ -295,7 +382,7 @@ function StandingsTable({
     );
   }
 
-  // Render Roto PROJECTED standings table - showing POINTS in each category
+  // Render Roto PROJECTED standings table - showing POINTS or STATS based on viewMode
   if (isRoto && showProjected) {
     /**
      * Get projected category POINTS for a team (not rank!)
@@ -316,6 +403,15 @@ function StandingsTable({
       const rank = team.projected_category_ranks?.[categoryKey]
         ?? team.category_ranks?.[categoryKey];
       return typeof rank === 'number' ? rank : null;
+    };
+
+    /**
+     * Get projected category VALUE (raw stat total)
+     */
+    const getProjectedCategoryValue = (team, categoryKey) => {
+      const value = team.projected_category_values?.[categoryKey]
+        ?? team.category_values?.[categoryKey];
+      return value !== undefined && value !== null ? value : '—';
     };
 
     /**
@@ -340,16 +436,29 @@ function StandingsTable({
 
     return (
       <div className={`standings-table-container roto roto-projected ${compact ? 'compact' : ''}`}>
-        {title && (
-          <h3 className="standings-title">
-            {title}
-            {startLimitsEnabled && (
-              <StartLimitsInfoIcon
-                tooltip="Projections are adjusted for position start limits using day-by-day simulation. Each position has a maximum number of games that can be started."
-              />
-            )}
-          </h3>
-        )}
+        <div className="standings-header-row">
+          {title && (
+            <h3 className="standings-title">
+              {title}
+              {startLimitsEnabled && (
+                <StartLimitsInfoIcon
+                  tooltip="Projections are adjusted for position start limits using day-by-day simulation. Each position has a maximum number of games that can be started."
+                />
+              )}
+            </h3>
+          )}
+          <div className="view-mode-select">
+            <select
+              value={viewMode}
+              onChange={(e) => setViewMode(e.target.value)}
+              className="view-mode-dropdown"
+            >
+              <option value="points">Roto Points</option>
+              <option value="stats">Projected Stats</option>
+            </select>
+            <ChevronDown />
+          </div>
+        </div>
         {irReturnNote && (
           <div className="ir-return-note" style={{
             fontSize: '0.8rem',
@@ -411,25 +520,43 @@ function StandingsTable({
                       </div>
                     </td>
                     {rotoCategories.map(cat => {
-                      // Get POINTS (10 for 1st, 9 for 2nd, etc.) - NOT rank
+                      // Get Roto points for color coding (used in both views)
                       const catPoints = getProjectedCategoryPoints(team, cat.key);
                       const catRank = getProjectedCategoryRank(team, cat.key);
                       const pointsClass = typeof catPoints === 'number'
                         ? getCategoryPointsClass(catPoints, totalTeams)
                         : '';
 
-                      // Build tooltip showing rank
-                      const tooltip = catRank
-                        ? `${cat.label}: Rank ${catRank} = ${catPoints} pts`
-                        : cat.label;
+                      if (viewMode === 'stats') {
+                        // Stats view: show projected stat values WITH color coding
+                        const catValue = getProjectedCategoryValue(team, cat.key);
 
-                      return (
-                        <td key={cat.key} className={`col-category ${pointsClass}`}>
-                          <span className="category-points" title={tooltip}>
-                            {catPoints}
-                          </span>
-                        </td>
-                      );
+                        // Build tooltip showing stat, rank and points
+                        const tooltip = catRank
+                          ? `${cat.label}: ${formatStat(catValue, cat.key)} (Rank ${catRank} = ${catPoints} pts)`
+                          : cat.label;
+
+                        return (
+                          <td key={cat.key} className={`col-category stats-view ${pointsClass}`}>
+                            <span className="category-stat" title={tooltip}>
+                              {formatStat(catValue, cat.key)}
+                            </span>
+                          </td>
+                        );
+                      } else {
+                        // Points view: show Roto points (10 for 1st, 9 for 2nd, etc.)
+                        const tooltip = catRank
+                          ? `${cat.label}: Rank ${catRank} = ${catPoints} pts`
+                          : cat.label;
+
+                        return (
+                          <td key={cat.key} className={`col-category ${pointsClass}`}>
+                            <span className="category-points" title={tooltip}>
+                              {catPoints}
+                            </span>
+                          </td>
+                        );
+                      }
                     })}
                     <td className="col-total">
                       <span className="total-points">{getProjectedTotalPoints(team)}</span>
