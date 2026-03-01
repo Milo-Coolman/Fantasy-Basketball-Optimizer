@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
-import { analyzeTrade, fetchTradeSettings, updateTradeSettings } from '../services/api';
+import { analyzeTrade, fetchTradeSettings, updateTradeSettings, analyzeWaiver } from '../services/api';
 
 /**
  * Icon components
@@ -604,9 +604,98 @@ function ImpactBadge({ score }) {
 }
 
 /**
- * Waiver Wire Targets Section
+ * Waiver Wire Targets Section with Click-to-Analyze
  */
-function WaiverTargets({ targets = [], maxItems = 3 }) {
+function WaiverTargets({
+  targets = [],
+  maxItems = 3,
+  leagueId,
+  currentRoster = [],
+  leagueAverages = {},
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [selectedPlayer, setSelectedPlayer] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const displayTargets = expanded ? targets : targets.slice(0, maxItems);
+  const hasMore = targets.length > maxItems;
+
+  /**
+   * Handle clicking on a waiver target to analyze
+   */
+  const handleAnalyzePlayer = async (player) => {
+    // If already selected, toggle off
+    if (selectedPlayer?.player_id === player.player_id || selectedPlayer?.id === player.id) {
+      setSelectedPlayer(null);
+      setAnalysis(null);
+      return;
+    }
+
+    // Check if we have the data needed for analysis
+    if (!leagueId || !currentRoster || currentRoster.length === 0) {
+      setSelectedPlayer(player);
+      setAnalysis(null);
+      setError('Roster data not available for analysis');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError('');
+      setSelectedPlayer(player);
+
+      // Build player data for analysis
+      const playerToAdd = {
+        player_id: player.player_id || player.id,
+        name: player.name || player.player_name,
+        nba_team: player.nba_team || player.team,
+        position: player.position,
+        per_game_stats: player.per_game_stats || player.stats || {},
+        projected_games: player.projected_games || 30,
+        eligible_slots: player.eligible_slots || player.eligibleSlots || [],
+      };
+
+      const response = await analyzeWaiver(leagueId, {
+        player_to_add: playerToAdd,
+        current_roster: currentRoster,
+        league_averages: leagueAverages,
+      });
+
+      setAnalysis(response.analysis || response);
+    } catch (err) {
+      console.error('Failed to analyze waiver:', err);
+      setError(err.response?.data?.error || 'Failed to analyze waiver move');
+      setAnalysis(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /**
+   * Get color class for recommendation
+   */
+  const getRecommendationClass = (recommendation) => {
+    switch (recommendation) {
+      case 'ADD': return 'recommendation-accept';
+      case 'PASS': return 'recommendation-reject';
+      case 'CONSIDER': return 'recommendation-consider';
+      default: return '';
+    }
+  };
+
+  /**
+   * Get color class for grade
+   */
+  const getGradeClass = (grade) => {
+    if (!grade) return '';
+    if (grade.startsWith('A')) return 'grade-a';
+    if (grade.startsWith('B')) return 'grade-b';
+    if (grade.startsWith('C')) return 'grade-c';
+    return 'grade-d';
+  };
+
   if (!targets || targets.length === 0) {
     return (
       <div className="insight-section">
@@ -627,29 +716,155 @@ function WaiverTargets({ targets = [], maxItems = 3 }) {
       <div className="insight-header">
         <WaiverIcon />
         <h3>Top Waiver Targets</h3>
+        {hasMore && (
+          <div className="header-actions">
+            <button
+              className="expand-btn"
+              onClick={() => setExpanded(!expanded)}
+              title={expanded ? 'Show less' : `Show all ${targets.length} targets`}
+            >
+              {expanded ? 'Show Less' : `+${targets.length - maxItems} more`}
+            </button>
+          </div>
+        )}
       </div>
-      <ul className="waiver-list">
-        {targets.slice(0, maxItems).map((player, idx) => (
-          <li key={player.id || idx} className="waiver-item">
-            <div className="waiver-rank">{idx + 1}</div>
-            <div className="waiver-info">
-              <div className="waiver-player">
-                <span className="player-name">{player.name}</span>
-                <span className="player-meta">
-                  {getPositionString(player)} • {player.nba_team || player.team}
+
+      <ul className={`waiver-list ${expanded ? 'expanded' : ''}`}>
+        {displayTargets.map((player, idx) => {
+          const playerId = player.player_id || player.id;
+          const isSelected = selectedPlayer && (selectedPlayer.player_id === playerId || selectedPlayer.id === playerId);
+
+          return (
+            <li
+              key={playerId || idx}
+              className={`waiver-item ${isSelected ? 'selected' : ''} ${leagueId ? 'clickable' : ''}`}
+              onClick={() => leagueId && handleAnalyzePlayer(player)}
+              title={leagueId ? 'Click to analyze add/drop' : ''}
+            >
+              <div className="waiver-rank">{idx + 1}</div>
+              <div className="waiver-info">
+                <div className="waiver-player">
+                  <span className="player-name">{player.name}</span>
+                  <span className="player-meta">
+                    {getPositionString(player)} • {player.nba_team || player.team}
+                  </span>
+                </div>
+                <div className="waiver-reason">
+                  {player.trending === 'up' && <TrendUpIcon />}
+                  {player.trending === 'down' && <TrendDownIcon />}
+                  {player.hot && <FireIcon />}
+                  <span>{player.reason || 'Strong pickup candidate'}</span>
+                </div>
+              </div>
+              <ImpactBadge score={player.impact_score || player.impact || 0} />
+            </li>
+          );
+        })}
+      </ul>
+
+      {/* Loading Indicator */}
+      {loading && (
+        <div className="waiver-analysis-loading">
+          <span className="loading-spinner-small"></span>
+          Analyzing...
+        </div>
+      )}
+
+      {/* Error Message */}
+      {error && !loading && selectedPlayer && (
+        <div className="waiver-analysis-error">
+          <span className="error-icon">⚠️</span>
+          {error}
+        </div>
+      )}
+
+      {/* Analysis Results */}
+      {analysis && selectedPlayer && !loading && (
+        <div className="waiver-analysis-results">
+          <div className="analysis-header">
+            <div className="analysis-title">
+              <span className="analysis-action">Add</span>
+              <strong>{selectedPlayer.name}</strong>
+            </div>
+            <div className="analysis-badges">
+              <span className={`recommendation-badge ${getRecommendationClass(analysis.recommendation)}`}>
+                {analysis.recommendation}
+              </span>
+              <span className={`grade-badge ${getGradeClass(analysis.grade)}`}>
+                {analysis.grade}
+              </span>
+              <button
+                className="close-analysis-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedPlayer(null);
+                  setAnalysis(null);
+                }}
+                title="Close analysis"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+          </div>
+
+          <div className="analysis-details">
+            {/* Drop Recommendation */}
+            {analysis.drop_player_name && analysis.drop_player_name !== 'No droppable player' && (
+              <div className="analysis-row drop-row">
+                <span className="row-label">Drop:</span>
+                <span className="row-value">
+                  <strong>{analysis.drop_player_name}</strong>
+                  <span className={`z-score ${analysis.drop_player_z_score >= 0 ? 'positive' : 'negative'}`}>
+                    ({analysis.drop_player_z_score >= 0 ? '+' : ''}{analysis.drop_player_z_score?.toFixed(2)})
+                  </span>
                 </span>
               </div>
-              <div className="waiver-reason">
-                {player.trending === 'up' && <TrendUpIcon />}
-                {player.trending === 'down' && <TrendDownIcon />}
-                {player.hot && <FireIcon />}
-                <span>{player.reason || 'Strong pickup candidate'}</span>
-              </div>
+            )}
+
+            {/* Net Z-Score Change */}
+            <div className="analysis-row z-change-row">
+              <span className="row-label">Net Z-Score:</span>
+              <span className={`row-value z-change ${analysis.net_z_score_change >= 0 ? 'positive' : 'negative'}`}>
+                {analysis.net_z_score_change >= 0 ? '+' : ''}{analysis.net_z_score_change?.toFixed(2)}/game
+              </span>
             </div>
-            <ImpactBadge score={player.impact_score || player.impact || 0} />
-          </li>
-        ))}
-      </ul>
+
+            {/* Category Changes */}
+            {(analysis.improves_categories?.length > 0 || analysis.hurts_categories?.length > 0) && (
+              <div className="analysis-categories">
+                {analysis.improves_categories?.length > 0 && (
+                  <div className="category-row improves">
+                    <span className="category-label">↑</span>
+                    <div className="category-chips">
+                      {analysis.improves_categories.map((cat, i) => (
+                        <span key={i} className="category-chip improves">{cat}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {analysis.hurts_categories?.length > 0 && (
+                  <div className="category-row hurts">
+                    <span className="category-label">↓</span>
+                    <div className="category-chips">
+                      {analysis.hurts_categories.map((cat, i) => (
+                        <span key={i} className="category-chip hurts">{cat}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Reason */}
+            {analysis.reason && (
+              <div className="analysis-reason">
+                <span className="reason-icon">💡</span>
+                <span className="reason-text">{analysis.reason}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1099,6 +1314,9 @@ function QuickInsights({
   showTradeAnalyzer = true,
   onSettingsChange = null,
 }) {
+  // Get user's current roster for waiver analysis
+  const currentRoster = userTeamId ? (teamRosters[userTeamId] || []) : [];
+
   return (
     <div className={`quick-insights ${compact ? 'compact' : ''} ${isRoto ? 'roto-mode' : ''}`}>
       {title && <h2 className="insights-title">{title}</h2>}
@@ -1110,7 +1328,13 @@ function QuickInsights({
         )}
 
         {showWaivers && (
-          <WaiverTargets targets={waiverTargets} maxItems={compact ? 2 : 3} />
+          <WaiverTargets
+            targets={waiverTargets}
+            maxItems={compact ? 2 : 3}
+            leagueId={leagueId}
+            currentRoster={currentRoster}
+            leagueAverages={leagueAverages}
+          />
         )}
 
         {showTrades && (

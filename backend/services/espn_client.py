@@ -1459,15 +1459,17 @@ class ESPNClient:
                 return team
         return None
 
-    def _parse_player(self, player, lineup_slot_id: int = 0) -> Dict[str, Any]:
+    def _parse_player(self, player, lineup_slot_id: int = 0, skip_injury_details: bool = False) -> Dict[str, Any]:
         """
         Parse an ESPN player object into a dictionary.
 
         Args:
             player: ESPN player object
             lineup_slot_id: Current lineup slot ID (0=PG, 1=SG, ..., 12=BE, 13=IR)
+            skip_injury_details: If True, skip fetching raw injury details (faster for free agents)
         """
         player_name = getattr(player, 'name', 'Unknown')
+        player_id = getattr(player, 'playerId', None) or getattr(player, 'id', 0)
 
         # =================================================================
         # DEBUG: Log raw ESPN player injury-related fields
@@ -1532,7 +1534,10 @@ class ESPNClient:
 
         # Get injuryDetails from raw ESPN API data (espn-api library does NOT expose this!)
         # We fetch this separately via _get_raw_injury_details which makes a raw HTTP request
-        injury_details = self._get_raw_injury_details(player_id)
+        # Skip for free agents (skip_injury_details=True) since cached data only has rostered players
+        injury_details = None
+        if not skip_injury_details:
+            injury_details = self._get_raw_injury_details(player_id)
 
         if injury_details:
             return_date = injury_details.get('expected_return_date')
@@ -1873,7 +1878,8 @@ class ESPNClient:
     def get_free_agents(
         self,
         size: int = 50,
-        position: Optional[str] = None
+        position: Optional[str] = None,
+        include_injury_details: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Get available free agents.
@@ -1881,6 +1887,8 @@ class ESPNClient:
         Args:
             size: Number of free agents to fetch (default 50)
             position: Filter by position (PG, SG, SF, PF, C) or None for all
+            include_injury_details: If True, fetch full injury details (slower but more accurate)
+                                   If False, only basic injury_status is available (faster)
 
         Returns:
             List of player dictionaries with stats and projections
@@ -1903,12 +1911,17 @@ class ESPNClient:
 
             result = []
             for player in free_agents:
-                player_data = self._parse_player(player)
+                # Skip injury details by default for speed (cached data only has rostered players)
+                # Set include_injury_details=True for accurate out-for-season/return date info
+                player_data = self._parse_player(player, skip_injury_details=not include_injury_details)
                 player_data['percent_owned'] = getattr(player, 'percent_owned', 0)
                 player_data['percent_started'] = getattr(player, 'percent_started', 0)
                 result.append(player_data)
 
-            logger.debug(f"Retrieved {len(result)} free agents")
+            if include_injury_details:
+                logger.info(f"Retrieved {len(result)} free agents (with injury details)")
+            else:
+                logger.info(f"Retrieved {len(result)} free agents (injury details skipped for speed)")
             return result
 
         except ESPNClientError:

@@ -9,10 +9,16 @@ Generates intelligent trade suggestions based on:
 
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, date
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Injury statuses that indicate a player is unavailable for trade consideration
+UNAVAILABLE_STATUSES = {'OUT', 'SUSPENSION', 'INACTIVE', 'SUSPENDED'}
+
+# How many days until return before filtering out (default: 14 days = 2 weeks)
+MAX_DAYS_UNTIL_RETURN = 14
 
 
 @dataclass
@@ -182,6 +188,17 @@ class TradeSuggestionGenerator:
 
         logger.info(f"User weak categories: {weak_categories}")
 
+        # Log availability filtering for user roster
+        available_user_count = sum(1 for p in user_roster if self._is_player_available(p))
+        unavailable_user_count = len(user_roster) - available_user_count
+        if unavailable_user_count > 0:
+            logger.info(f"User roster: {len(user_roster)} total, {available_user_count} available "
+                       f"({unavailable_user_count} filtered: injured/suspended)")
+            for p in user_roster:
+                if not self._is_player_available(p):
+                    logger.info(f"  Filtered from user roster: {p.get('name', 'Unknown')} "
+                               f"(status={p.get('injury_status', 'N/A')})")
+
         # Check if rosters already have z-scores from optimizer
         has_optimizer_z_scores = any(
             p.get('per_game_value') is not None or p.get('z_score_value') is not None
@@ -258,31 +275,86 @@ class TradeSuggestionGenerator:
 
     def _identify_weak_categories(
         self,
-        category_ranks: Dict[str, int],
+        category_ranks: Dict[str, float],
         num_teams: int
     ) -> List[str]:
         """
-        Identify categories where user is projected to rank 6+ (weak).
+        Identify target categories using TWO-TIER LOGIC:
 
-        Uses END-OF-SEASON PROJECTIONS, not current standings.
-        The category_ranks parameter should contain projected_category_ranks
-        from the projection engine, which forecasts where the team will
-        finish in each category based on remaining schedule and player projections.
+        1. If ANY category is in bottom half (rank > num_teams/2):
+           → Target ALL bottom-half categories
 
-        A category is considered "weak" if ranked in the bottom half of the league.
-        For a 10-team league, this means rank >= 6.
+        2. If ALL categories are in top half:
+           → Target ONLY the weakest category (or all tied for weakest)
+
+        This balances broad improvement vs focused optimization.
+
+        Args:
+            category_ranks: Dict of {category: rank OR roto_points}
+                           If values look like Roto points (1-10), converts to ranks
+            num_teams: Number of teams in the league
+
+        Returns:
+            List of category names to target for trade suggestions
         """
-        # Adjust threshold for league size
-        threshold = max(num_teams // 2 + 1, self.weak_threshold)
+        if not category_ranks:
+            logger.warning("No category ranks provided")
+            return []
 
-        weak = []
-        for cat, rank in category_ranks.items():
-            if rank >= threshold:
-                weak.append(cat)
+        # Detect if values are Roto points (1-10 scale where higher is better)
+        # vs ranks (1-10 scale where lower is better)
+        # Heuristic: if max value equals num_teams, likely Roto points
+        max_value = max(category_ranks.values()) if category_ranks else 0
+        values_are_roto_points = max_value == num_teams or max_value == num_teams - 0.5
 
-        # Sort by weakness (worst first)
-        weak.sort(key=lambda c: category_ranks.get(c, 0), reverse=True)
-        return weak
+        # Convert to ranks if needed (rank = num_teams - roto_points + 1)
+        actual_ranks = {}
+        for cat, value in category_ranks.items():
+            if values_are_roto_points:
+                # Convert Roto points to rank
+                # 10 points (1st place) -> rank 1
+                # 1 point (last place) -> rank 10
+                rank = num_teams - value + 1
+            else:
+                rank = value
+            actual_ranks[cat] = rank
+
+        logger.info(f"Category ranks (converted={values_are_roto_points}): {actual_ranks}")
+
+        # Bottom half threshold: rank > num_teams/2
+        # For 10-team: rank > 5 (i.e., ranks 6-10 are bottom half)
+        bottom_half_threshold = num_teams / 2
+
+        logger.info(f"Bottom half threshold: rank > {bottom_half_threshold}")
+
+        # Find categories in bottom half
+        bottom_half_categories = {
+            cat: rank for cat, rank in actual_ranks.items()
+            if rank > bottom_half_threshold
+        }
+
+        # CASE 1: At least one category in bottom half
+        # → Target ALL bottom-half categories
+        if bottom_half_categories:
+            target_categories = list(bottom_half_categories.keys())
+            # Sort by weakness (worst first)
+            target_categories.sort(key=lambda c: actual_ranks.get(c, 0), reverse=True)
+            logger.info(f"CASE 1: Bottom-half categories found: {target_categories}")
+            logger.info(f"Generating suggestions for ALL {len(target_categories)} bottom-half categories")
+            return target_categories
+
+        # CASE 2: All categories in top half
+        # → Target ONLY the weakest category (or all tied for weakest)
+        weakest_rank = max(actual_ranks.values())
+        target_categories = [
+            cat for cat, rank in actual_ranks.items()
+            if rank == weakest_rank
+        ]
+
+        logger.info(f"CASE 2: All categories in top half!")
+        logger.info(f"Targeting weakest (rank {weakest_rank}): {target_categories}")
+
+        return target_categories
 
     def _find_teams_strong_in_category(
         self,
@@ -471,6 +543,58 @@ class TradeSuggestionGenerator:
 
         return 0.0
 
+    def _is_player_available(self, player: Dict) -> bool:
+        """
+        Check if a player is available to play (not out for season or long-term injured).
+
+        Filters out:
+        - Players marked as out for season
+        - Players with long-term injuries (return date > 14 days away)
+        - Players with OUT/SUSPENSION/INACTIVE status
+
+        Args:
+            player: Player dictionary with injury_status, injury_details, etc.
+
+        Returns:
+            True if player is available or will return soon, False otherwise
+        """
+        player_name = player.get('name', 'Unknown')
+
+        # Check injury_details for out_for_season flag
+        injury_details = player.get('injury_details') or {}
+        if injury_details.get('out_for_season', False):
+            logger.debug(f"Trade filter: {player_name} - OUT FOR SEASON")
+            return False
+
+        # Check expected return date
+        expected_return = player.get('expected_return_date')
+        if not expected_return and injury_details:
+            expected_return = injury_details.get('expected_return_date')
+
+        if expected_return:
+            # Handle both date objects and strings
+            if isinstance(expected_return, str):
+                try:
+                    expected_return = datetime.strptime(expected_return, '%Y-%m-%d').date()
+                except ValueError:
+                    expected_return = None
+
+            if isinstance(expected_return, date):
+                today = date.today()
+                days_until_return = (expected_return - today).days
+                if days_until_return > MAX_DAYS_UNTIL_RETURN:
+                    logger.debug(f"Trade filter: {player_name} - returns in {days_until_return} days")
+                    return False
+
+        # Check injury status (OUT, SUSPENSION, INACTIVE are not available)
+        injury_status = (player.get('injury_status') or '').upper()
+        if injury_status in UNAVAILABLE_STATUSES:
+            logger.debug(f"Trade filter: {player_name} - status={injury_status}")
+            return False
+
+        # Player is available (ACTIVE, DTD, QUESTIONABLE, or no status)
+        return True
+
     def _get_category_z_score(
         self,
         player: Dict,
@@ -597,11 +721,21 @@ class TradeSuggestionGenerator:
         stat_key = CATEGORY_TO_STAT.get(weak_category, weak_category.lower())
 
         # Find partner players who are strong in the weak category
+        # FILTER: Skip unavailable players (out for season, long-term injured, suspended)
         partner_strong_players = []
+        partner_filtered_count = 0
         for p in partner_roster:
+            # Check if player is available (not injured long-term)
+            if not self._is_player_available(p):
+                partner_filtered_count += 1
+                continue
+
             cat_z = self._get_category_z_score(p, stat_key, league_averages)
             if cat_z > 0.5:  # Above average in this category
                 partner_strong_players.append(p)
+
+        if partner_filtered_count > 0:
+            logger.info(f"Filtered {partner_filtered_count} unavailable players from {partner_team_name}")
 
         if not partner_strong_players:
             return []
@@ -612,6 +746,11 @@ class TradeSuggestionGenerator:
             partner_cat_z = self._get_category_z_score(partner_player, stat_key, league_averages)
 
             for my_player in user_roster:
+                # FILTER: Don't suggest trading away unavailable players
+                # (they have low trade value anyway and the trade wouldn't go through)
+                if not self._is_player_available(my_player):
+                    continue
+
                 my_z = my_player.get('z_score_value', 0)
                 my_cat_z = self._get_category_z_score(my_player, stat_key, league_averages)
 

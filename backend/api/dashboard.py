@@ -2473,74 +2473,296 @@ def get_waiver_targets(
     season: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """
-    Get top waiver wire targets based on team needs.
+    Get top waiver wire targets based on NET Z-SCORE BENEFIT.
+
+    Uses the same z-score system as trade analyzer for consistency.
+    Impact = FA_z_score - Worst_Droppable_Player_z_score
 
     Args:
         espn_client: ESPN client instance
-        team_weaknesses: List of weakness categories
+        team_weaknesses: List of weakness categories (for display only)
         limit: Number of targets to return
         season: The season year (e.g., 2026) for dynamic stat access
     """
+    logger.info("=" * 60)
+    logger.info("=== GET_WAIVER_TARGETS (Z-SCORE BASED) ===")
+
+    # Get user's team ID and roster
     try:
-        free_agents = espn_client.get_free_agents(size=50)
+        my_team_id = espn_client.get_user_team_id()
+        all_rosters = espn_client.get_all_rosters()
+        current_roster = all_rosters.get(my_team_id, []) if my_team_id else []
+        league_averages = calculate_league_averages_for_trade(all_rosters)
+        logger.info(f"Fetched roster for team {my_team_id}: {len(current_roster)} players")
+    except Exception as e:
+        logger.warning(f"Could not fetch roster/averages: {e}")
+        current_roster = []
+        league_averages = {}
+
+    # Get free agents
+    try:
+        all_free_agents = espn_client.get_free_agents(size=50)
+        logger.info(f"Fetched {len(all_free_agents)} free agents from ESPN")
     except Exception as e:
         logger.warning(f"Could not fetch free agents: {e}")
         return []
 
-    targets = []
-    weakness_cats = [w.lower() for w in team_weaknesses]
+    if not all_free_agents:
+        return []
 
-    # Build dynamic season keys
-    if season:
-        season_keys = [f'{season}_total', f'{season - 1}_total', 'total']
-    else:
-        season_keys = ['2026_total', '2025_total', 'total']
+    # FILTER OUT UNAVAILABLE PLAYERS
+    # Filter players who are OUT, SUSPENDED, INACTIVE, or have long-term injuries
+    # Note: injury_details may be None (skipped for speed), but injury_status is available
+    unavailable_statuses = {'OUT', 'SUSPENSION', 'INACTIVE', 'SUSPENDED'}
+    free_agents = []
+    filtered_count = 0
 
-    for player in free_agents[:limit * 3]:
-        player_stats = player.get('stats', {})
+    for player in all_free_agents:
+        player_name = player.get('name', 'Unknown')
+        injury_status = (player.get('injury_status') or '').upper()
 
-        season_stats = None
-        for key in season_keys:
-            if key in player_stats and isinstance(player_stats[key], dict):
-                if 'avg' in player_stats[key]:
-                    season_stats = player_stats[key]['avg']
-                    break
+        # Check injury_details if available (may be None for free agents)
+        injury_details = player.get('injury_details') or {}
 
-        if not season_stats:
+        # Filter: Out for season
+        if injury_details.get('out_for_season', False):
+            logger.info(f"  Filtering {player_name}: OUT FOR SEASON")
+            filtered_count += 1
             continue
 
-        impact_score = 50
-        percent_owned = player.get('percent_owned', 0) or 0
+        # Filter: Long-term injury (return date > 14 days away)
+        expected_return = player.get('expected_return_date') or injury_details.get('expected_return_date')
+        if expected_return:
+            if isinstance(expected_return, str):
+                try:
+                    expected_return = datetime.strptime(expected_return, '%Y-%m-%d').date()
+                except ValueError:
+                    expected_return = None
 
-        if percent_owned > 50:
-            impact_score += 20
-        elif percent_owned > 25:
-            impact_score += 10
+            if expected_return:
+                days_until_return = (expected_return - date.today()).days
+                if days_until_return > 14:
+                    logger.info(f"  Filtering {player_name}: Returns {expected_return} ({days_until_return} days)")
+                    filtered_count += 1
+                    continue
 
-        # Build reason string
-        reasons = []
-        stat_map = {'pts': 'PTS', 'reb': 'REB', 'ast': 'AST', 'stl': 'STL', 'blk': 'BLK', '3pm': '3PM'}
+        # Filter: OUT, SUSPENSION, INACTIVE status
+        if injury_status in unavailable_statuses:
+            logger.info(f"  Filtering {player_name}: Status={injury_status}")
+            filtered_count += 1
+            continue
 
-        for weakness in weakness_cats:
-            if weakness in stat_map:
-                stat_val = season_stats.get(stat_map[weakness], 0) or 0
-                if stat_val > 0:
-                    impact_score += 15
-                    reasons.append(f"Strong {stat_map[weakness]}")
+        # Player is available
+        free_agents.append(player)
 
-        targets.append({
-            'id': player.get('espn_player_id'),
-            'name': player.get('name'),
-            'position': player.get('position'),
-            'nba_team': player.get('nba_team'),
-            'percent_owned': percent_owned,
-            'impact_score': min(100, impact_score),
-            'reason': ', '.join(reasons[:2]) if reasons else 'Available pickup',
-            'trending': 'up' if percent_owned > 30 else None,
-        })
+    logger.info(f"Filtered {filtered_count} unavailable players, {len(free_agents)} available")
 
-    targets.sort(key=lambda x: x['impact_score'], reverse=True)
-    return targets[:limit]
+    if not free_agents:
+        logger.warning("No available free agents after filtering")
+        return []
+
+    # Calculate z-scores for free agents
+    free_agents = _calculate_z_scores_for_players(free_agents, league_averages, season)
+
+    # Calculate z-scores for current roster
+    if current_roster:
+        current_roster = _calculate_z_scores_for_players(current_roster, league_averages, season)
+
+    # Find worst droppable player on roster
+    worst_player = None
+    worst_z_score = 0.0
+
+    if current_roster:
+        droppable_players = [
+            p for p in current_roster
+            if p.get('droppable', True) and p.get('lineupSlotId', 0) != 13  # Exclude IR
+        ]
+        if droppable_players:
+            droppable_players.sort(key=lambda p: p.get('z_score_value', 0))
+            worst_player = droppable_players[0]
+            worst_z_score = worst_player.get('z_score_value', 0)
+
+    logger.info(f"Worst droppable: {worst_player.get('name') if worst_player else 'None'} (z={worst_z_score:.2f})")
+
+    # Calculate net benefit for each free agent
+    waiver_targets = []
+
+    for fa in free_agents:
+        fa_z_score = fa.get('z_score_value', 0)
+        per_game_stats = fa.get('per_game_stats', {})
+
+        # Skip players without stats
+        if not per_game_stats and fa_z_score == 0:
+            continue
+
+        # Net benefit = adding FA - dropping worst player
+        net_benefit = fa_z_score - worst_z_score
+
+        # Only include if net positive (or close)
+        if net_benefit > -0.5:
+            # Determine which categories improve
+            improves = _get_category_improvements(fa, worst_player) if worst_player else []
+
+            # Build reason string
+            if net_benefit > 0:
+                drop_name = worst_player.get('name', 'worst') if worst_player else 'roster'
+                reason = f"+{net_benefit:.1f} z vs {drop_name}"
+            else:
+                reason = f"Sidegrade ({net_benefit:+.1f} z)"
+
+            # Convert net_benefit to 0-100 impact score for UI
+            # Map z-score range [-2, +4] to [0, 100]
+            impact_score = int(min(100, max(0, (net_benefit + 2) * 16.67)))
+
+            waiver_targets.append({
+                'id': fa.get('espn_player_id') or fa.get('player_id'),
+                'player_id': fa.get('espn_player_id') or fa.get('player_id'),
+                'name': fa.get('name'),
+                'position': fa.get('position'),
+                'nba_team': fa.get('nba_team'),
+                'team': fa.get('nba_team'),
+                'percent_owned': fa.get('percent_owned', 0),
+                'z_score': round(fa_z_score, 2),
+                'net_benefit': round(net_benefit, 2),
+                'impact_score': impact_score,
+                'would_drop': worst_player.get('name') if worst_player else None,
+                'would_drop_z_score': round(worst_z_score, 2) if worst_player else None,
+                'improves_categories': improves,
+                'reason': reason,
+                'trending': 'up' if net_benefit > 1.0 else None,
+                'per_game_stats': per_game_stats,
+                'eligible_slots': fa.get('eligible_slots', []),
+            })
+
+    # Sort by net benefit (highest first)
+    waiver_targets.sort(key=lambda t: t['net_benefit'], reverse=True)
+
+    result = waiver_targets[:limit]
+    logger.info(f"Found {len(waiver_targets)} beneficial targets, returning top {len(result)}")
+    if result:
+        for i, t in enumerate(result[:3]):
+            logger.info(f"  #{i+1}: {t['name']} (z={t['z_score']:.2f}, net={t['net_benefit']:+.2f})")
+    logger.info("=" * 60)
+
+    return result
+
+
+def _calculate_z_scores_for_players(
+    players: List[Dict],
+    league_averages: Dict,
+    season: Optional[int] = None
+) -> List[Dict]:
+    """
+    Calculate z-score values for a list of players.
+
+    Args:
+        players: List of player dicts
+        league_averages: Dict of stat -> {mean, std}
+        season: Season year for stat extraction
+
+    Returns:
+        Same list with z_score_value added to each player
+    """
+    if not league_averages:
+        return players
+
+    # Categories to include in z-score (matching trade analyzer)
+    categories = ['pts', 'reb', 'ast', 'stl', 'blk', '3pm', 'to', 'fg_pct', 'ft_pct']
+
+    for player in players:
+        # Skip if already has z-score
+        if player.get('z_score_value', 0) != 0:
+            continue
+
+        per_game_stats = player.get('per_game_stats', {})
+
+        # Try to extract from nested stats if per_game_stats is empty
+        if not per_game_stats:
+            player_stats = player.get('stats', {})
+            season_keys = [f'{season}_total', '2026_total', '2025_total', 'total'] if season else ['2026_total', '2025_total', 'total']
+            for key in season_keys:
+                if key in player_stats and isinstance(player_stats[key], dict):
+                    if 'avg' in player_stats[key]:
+                        per_game_stats = player_stats[key]['avg']
+                        player['per_game_stats'] = per_game_stats
+                        break
+
+        if not per_game_stats:
+            player['z_score_value'] = 0
+            continue
+
+        # Calculate z-score sum
+        total_z = 0.0
+        for cat in categories:
+            avg_data = league_averages.get(cat, {})
+            mean = avg_data.get('mean', 0)
+            std = avg_data.get('std', 1)
+
+            # Get stat value (handle different key formats)
+            value = per_game_stats.get(cat, 0) or 0
+            if value == 0:
+                upper_key = cat.upper().replace('_PCT', '%')
+                value = per_game_stats.get(upper_key, 0) or 0
+
+            # Scale percentages if stored as decimal
+            if cat in ['fg_pct', 'ft_pct'] and 0 < value < 1.0:
+                value = value * 100
+
+            # Calculate z-score
+            if std > 0:
+                z = (value - mean) / std
+            else:
+                z = 0
+
+            # Flip sign for turnovers (fewer is better)
+            if cat == 'to':
+                z = -z
+
+            total_z += z
+
+        player['z_score_value'] = total_z
+
+    return players
+
+
+def _get_category_improvements(
+    add_player: Dict,
+    drop_player: Optional[Dict]
+) -> List[str]:
+    """
+    Determine which categories improve when swapping players.
+
+    Args:
+        add_player: Player being added
+        drop_player: Player being dropped
+
+    Returns:
+        List of category names that improve
+    """
+    if not drop_player:
+        return []
+
+    improvements = []
+    add_stats = add_player.get('per_game_stats', {})
+    drop_stats = drop_player.get('per_game_stats', {})
+
+    # Check each category
+    category_map = {
+        'PTS': 'pts', 'REB': 'reb', 'AST': 'ast',
+        'STL': 'stl', 'BLK': 'blk', '3PM': '3pm',
+    }
+
+    for display_name, stat_key in category_map.items():
+        add_value = add_stats.get(stat_key, 0) or 0
+        drop_value = drop_stats.get(stat_key, 0) or 0
+
+        # 10% improvement threshold
+        if drop_value > 0 and add_value > drop_value * 1.1:
+            improvements.append(display_name)
+        elif drop_value == 0 and add_value > 0.5:
+            improvements.append(display_name)
+
+    return improvements
 
 
 def get_trade_opportunities(

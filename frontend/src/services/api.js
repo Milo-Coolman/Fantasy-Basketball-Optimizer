@@ -248,6 +248,39 @@ export const fetchWaiverRecommendations = async (leagueId, options = {}) => {
 };
 
 /**
+ * Analyze a specific waiver wire add/drop move
+ *
+ * @param {number} leagueId - League ID
+ * @param {Object} data - Analysis request data
+ * @param {Object} data.player_to_add - Free agent player data to add
+ * @param {Object} data.player_to_drop - (optional) Player to drop from roster
+ * @param {Array} data.current_roster - Current roster players
+ * @param {Object} data.league_averages - League averages for z-score calculation
+ * @returns {Object} WaiverAnalysis results
+ */
+export const analyzeWaiver = async (leagueId, data) => {
+  const response = await api.post(`/leagues/${leagueId}/waivers/analyze`, data);
+  return response.data;
+};
+
+/**
+ * Get waiver wire pickup suggestions
+ *
+ * @param {number} leagueId - League ID
+ * @param {Object} data - Suggestion request data
+ * @param {number} data.team_id - User's team ID
+ * @param {Array} data.current_roster - Current roster players
+ * @param {Object} data.league_averages - League averages for z-score calculation
+ * @param {Array} data.weak_categories - Categories to prioritize improving
+ * @param {number} data.max_suggestions - Maximum suggestions to return
+ * @returns {Object} Waiver suggestions and drop candidates
+ */
+export const fetchWaiverSuggestions = async (leagueId, data) => {
+  const response = await api.post(`/leagues/${leagueId}/waivers/suggestions`, data);
+  return response.data;
+};
+
+/**
  * Get streaming recommendations for H2H leagues
  */
 export const fetchStreamingRecommendations = async (leagueId, teamId) => {
