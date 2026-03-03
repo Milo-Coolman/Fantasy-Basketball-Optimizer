@@ -529,6 +529,51 @@ class ESPNClient:
             logger.warning(f"Could not get roster settings: {e}")
             return {}
 
+    def get_roster_size_info(self) -> Dict[str, int]:
+        """
+        Get roster size information including IR slots.
+
+        Returns:
+            Dictionary containing:
+                - total_roster_size: Total roster spots including IR
+                - ir_slots: Number of IR/IL slots
+                - active_roster_size: Active roster size (total - IR)
+
+        This is used for trade analysis to determine if a multi-player trade
+        would exceed roster limits.
+        """
+        try:
+            roster_settings = self._get_roster_settings()
+
+            # Calculate total roster size
+            total_size = sum(roster_settings.values())
+
+            # Calculate IR slots (IR, IR+, IL, IL+)
+            ir_slots = 0
+            ir_slot_names = ['IR', 'IR+', 'IL', 'IL+']
+            for slot_name in ir_slot_names:
+                ir_slots += roster_settings.get(slot_name, 0)
+
+            # Active roster = total - IR slots
+            active_size = total_size - ir_slots
+
+            logger.info(f"Roster size info: {total_size} total, {ir_slots} IR, {active_size} active")
+
+            return {
+                'total_roster_size': total_size,
+                'ir_slots': ir_slots,
+                'active_roster_size': active_size,
+            }
+
+        except Exception as e:
+            logger.warning(f"Could not get roster size info: {e}")
+            # Return reasonable defaults
+            return {
+                'total_roster_size': 15,
+                'ir_slots': 2,
+                'active_roster_size': 13,
+            }
+
     def _get_scoring_settings(self) -> Dict[str, Any]:
         """Get scoring category settings."""
         try:

@@ -2725,6 +2725,46 @@ def _calculate_z_scores_for_players(
     return players
 
 
+def _add_z_scores_to_all_rosters(
+    all_rosters: Dict[int, List[Dict]],
+    league_averages: Dict,
+    season: Optional[int] = None
+) -> Dict[int, List[Dict]]:
+    """
+    Add z_score_value to all players in all rosters.
+
+    This ensures every player has a z_score_value for the trade analyzer's
+    auto-drop functionality to work correctly.
+
+    Args:
+        all_rosters: Dict mapping team_id to roster (list of player dicts)
+        league_averages: Dict of stat -> {mean, std}
+        season: Season year for stat extraction
+
+    Returns:
+        Same dict structure with z_score_value added to each player
+    """
+    if not league_averages:
+        logger.warning("_add_z_scores_to_all_rosters: No league_averages provided")
+        return all_rosters
+
+    total_players = 0
+    players_with_z = 0
+
+    for team_id, roster in all_rosters.items():
+        roster = _calculate_z_scores_for_players(roster, league_averages, season)
+        all_rosters[team_id] = roster
+
+        for player in roster:
+            total_players += 1
+            if player.get('z_score_value') is not None:
+                players_with_z += 1
+
+    logger.info(f"Added z_score_value to all rosters: {players_with_z}/{total_players} players")
+
+    return all_rosters
+
+
 def _get_category_improvements(
     add_player: Dict,
     drop_player: Optional[Dict]
@@ -3173,6 +3213,8 @@ def get_dashboard(league_id: int):
                     'league_name': league.league_name,
                     'league_type': league.league_type,
                     'season': league.season,
+                    'num_teams': league.num_teams or len(all_rosters),
+                    'active_roster_limit': league.active_roster_limit,
                 },
                 'is_roto': True,
                 'scoring_categories': [
@@ -3196,7 +3238,8 @@ def get_dashboard(league_id: int):
                 },
                 'start_limits': start_limits_summary,
                 # Team rosters for trade analyzer (keyed by team_id)
-                'team_rosters': all_rosters,
+                # Calculate z-scores for all players before sending to frontend
+                'team_rosters': _add_z_scores_to_all_rosters(all_rosters, calculate_league_averages_for_trade(all_rosters), espn_client.year),
                 # League averages for trade z-score calculation
                 'league_averages': calculate_league_averages_for_trade(all_rosters),
                 'last_updated': datetime.utcnow().isoformat(),
@@ -3326,6 +3369,8 @@ def get_dashboard(league_id: int):
                     'league_name': league.league_name,
                     'league_type': league.league_type,
                     'season': league.season,
+                    'num_teams': league.num_teams or len(teams),
+                    'active_roster_limit': league.active_roster_limit,
                 },
                 'is_roto': False,
                 'current_standings': current_standings,
@@ -3337,7 +3382,8 @@ def get_dashboard(league_id: int):
                     'trade_opportunities': trade_opportunities,
                 },
                 # Team rosters for trade analyzer (keyed by team_id)
-                'team_rosters': all_rosters,
+                # Calculate z-scores for all players before sending to frontend
+                'team_rosters': _add_z_scores_to_all_rosters(all_rosters, calculate_league_averages_for_trade(all_rosters), espn_client.year),
                 # League averages for trade z-score calculation
                 'league_averages': calculate_league_averages_for_trade(all_rosters),
                 'last_updated': datetime.utcnow().isoformat(),

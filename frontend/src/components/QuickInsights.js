@@ -151,6 +151,7 @@ function TradeAnalyzerModal({
   teamRosters = {}, // Map of teamId -> roster array
   leagueAverages = {},
   numTeams = 10,
+  rosterSizeLimit = 15, // Maximum roster size for the league
 }) {
   // Team selection state
   const [team1Id, setTeam1Id] = useState(userTeamId || null);
@@ -246,6 +247,16 @@ function TradeAnalyzerModal({
         .map(id => getPlayerData(id, theirRoster))
         .filter(Boolean);
 
+      // Build current roster data for roster limit checking
+      const currentRosterData = myRoster.map(p => ({
+        player_id: p.player_id,
+        name: p.name || p.player_name,
+        nba_team: p.nba_team || p.team,
+        per_game_stats: p.per_game_stats || p.stats || {},
+        projected_games: p.projected_games || 30,
+        z_score_value: p.z_score_value,
+      }));
+
       const result = await analyzeTrade(leagueId, {
         team1_id: isTeam1User ? team1Id : team2Id,
         team2_id: isTeam1User ? team2Id : team1Id,
@@ -255,6 +266,8 @@ function TradeAnalyzerModal({
         team2_player_data: playersInData,
         league_averages: leagueAverages,
         num_teams: numTeams,
+        current_roster: currentRosterData,
+        roster_size_limit: rosterSizeLimit,
       });
 
       setAnalysis(result.analysis || result);
@@ -513,6 +526,11 @@ function TradeAnalyzerModal({
           {analysis && (
             <div className="trade-analysis-results">
               <div className="analysis-header">
+                {analysis.trade_type && analysis.trade_type !== '1-for-1' && (
+                  <div className="trade-type-badge">
+                    {analysis.trade_type}
+                  </div>
+                )}
                 <div className={`recommendation-badge ${getRecommendationClass(analysis.recommendation)}`}>
                   {analysis.recommendation}
                 </div>
@@ -520,6 +538,29 @@ function TradeAnalyzerModal({
                   {analysis.trade_grade}
                 </div>
               </div>
+
+              {/* Additional Drops Warning */}
+              {analysis.additional_drops && analysis.additional_drops.length > 0 && (
+                <div className="additional-drops-warning">
+                  <span className="warning-icon">⚠️</span>
+                  <div className="warning-content">
+                    <strong>Roster Limit Exceeded</strong>
+                    <p>
+                      This trade requires dropping {analysis.additional_drops.length} player{analysis.additional_drops.length > 1 ? 's' : ''} to stay under the {rosterSizeLimit}-player limit:
+                    </p>
+                    <ul className="drops-list">
+                      {analysis.additional_drops.map((drop, idx) => (
+                        <li key={idx}>
+                          <span className="drop-name">{drop.name}</span>
+                          <span className={`drop-value ${drop.z_score_value >= 0 ? 'positive' : 'negative'}`}>
+                            ({drop.z_score_value >= 0 ? '+' : ''}{drop.z_score_value?.toFixed(2)} z-score)
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
 
               <div className="analysis-summary">
                 <div className="summary-item z-score">
@@ -883,6 +924,7 @@ function TradeOpportunities({
   myCurrentRank = 5,
   myCurrentRotoPoints = 50,
   numTeams = 10,
+  rosterSizeLimit = 15,
   showAnalyzer = true,
   onSettingsChange = null,
 }) {
@@ -1101,6 +1143,7 @@ function TradeOpportunities({
         myCurrentRank={myCurrentRank}
         myCurrentRotoPoints={myCurrentRotoPoints}
         numTeams={numTeams}
+        rosterSizeLimit={rosterSizeLimit}
       />
     </div>
   );
@@ -1311,6 +1354,7 @@ function QuickInsights({
   myCurrentRank = 5,
   myCurrentRotoPoints = 50,
   numTeams = 10,
+  rosterSizeLimit = 15,
   showTradeAnalyzer = true,
   onSettingsChange = null,
 }) {
@@ -1349,6 +1393,7 @@ function QuickInsights({
             myCurrentRank={myCurrentRank}
             myCurrentRotoPoints={myCurrentRotoPoints}
             numTeams={numTeams}
+            rosterSizeLimit={rosterSizeLimit}
             showAnalyzer={showTradeAnalyzer}
             onSettingsChange={onSettingsChange}
           />
@@ -1417,6 +1462,7 @@ QuickInsights.propTypes = {
   myCurrentRank: PropTypes.number,
   myCurrentRotoPoints: PropTypes.number,
   numTeams: PropTypes.number,
+  rosterSizeLimit: PropTypes.number,
   showTradeAnalyzer: PropTypes.bool,
   onSettingsChange: PropTypes.func,
 };

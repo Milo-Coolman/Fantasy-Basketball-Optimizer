@@ -29,20 +29,25 @@ def analyze_trade(league_id):
     """
     Analyze a potential trade between two teams using z-score comparison.
 
+    Supports multi-player trades (1-for-1, 2-for-1, 2-for-2, 3-for-1, etc.)
+    and automatically determines additional drops needed to fit roster limits.
+
     Args:
         league_id: League ID
 
     Request JSON:
-        team1_id: First team ID
-        team1_players: Array of player IDs from team 1
-        team2_id: Second team ID
-        team2_players: Array of player IDs from team 2
+        team1_id: First team ID (your team)
+        team1_players: Array of player IDs from team 1 (players you give)
+        team2_id: Second team ID (trade partner)
+        team2_players: Array of player IDs from team 2 (players you receive)
         team1_player_data: Full player data for team1's players in trade
         team2_player_data: Full player data for team2's players in trade
         league_averages: Dict of stat averages for z-score calculation
+        current_roster: (optional) Full roster for team1 to check roster limits
+        roster_size_limit: (optional) Maximum roster size (default: from league settings or 15)
 
     Returns:
-        JSON with z-score based trade analysis results.
+        JSON with z-score based trade analysis results including additional_drops.
     """
     league = League.query.filter_by(id=league_id, user_id=current_user.id).first()
 
@@ -72,10 +77,57 @@ def analyze_trade(league_id):
         team2_player_data = data.get('team2_player_data', [])
         league_averages = data.get('league_averages', {})
 
+        # Get roster data for multi-player trade support
+        current_roster = data.get('current_roster', [])
+        roster_size_limit = data.get('roster_size_limit')
+
+        # Get roster limit from cached league setting or fetch from ESPN
+        if not roster_size_limit:
+            # First check if we have it cached in the league model
+            if league.active_roster_limit:
+                roster_size_limit = league.active_roster_limit
+                logger.info(f"Using cached active_roster_limit: {roster_size_limit}")
+            else:
+                # Fetch from ESPN and cache it
+                try:
+                    espn_client = ESPNClient(
+                        league_id=league.espn_league_id,
+                        year=league.season,
+                        espn_s2=league.espn_s2_cookie,
+                        swid=league.swid_cookie
+                    )
+                    roster_info = espn_client.get_roster_size_info()
+                    roster_size_limit = roster_info['active_roster_size']
+
+                    # Cache it for future use
+                    league.active_roster_limit = roster_size_limit
+                    db.session.commit()
+                    logger.info(f"Fetched and cached active_roster_limit from ESPN: {roster_size_limit} "
+                               f"(total: {roster_info['total_roster_size']}, IR: {roster_info['ir_slots']})")
+                except Exception as e:
+                    logger.warning(f"Could not fetch roster size from ESPN: {e}")
+                    # Fall back to league.roster_settings if available
+                    if league.roster_settings:
+                        roster_settings = league.roster_settings
+                        if isinstance(roster_settings, str):
+                            import json
+                            roster_settings = json.loads(roster_settings)
+                        # Try to calculate active slots (total - IR)
+                        total = sum(roster_settings.values()) if isinstance(roster_settings, dict) else 15
+                        ir_slots = roster_settings.get('IR', 0) + roster_settings.get('IR+', 0)
+                        roster_size_limit = total - ir_slots
+                    else:
+                        roster_size_limit = 13  # Reasonable default (15 total - 2 IR)
+
+        logger.info(f"Roster limit for league {league_id}: {roster_size_limit} (excluding IR)")
+
         logger.info(f"=== TRADE ANALYSIS REQUEST ===")
         logger.info(f"League ID: {league_id}")
-        logger.info(f"Team 1 players: {len(team1_player_data)}")
-        logger.info(f"Team 2 players: {len(team2_player_data)}")
+        logger.info(f"Trade type: {len(team1_player_data)}-for-{len(team2_player_data)}")
+        logger.info(f"Team 1 players (giving): {len(team1_player_data)}")
+        logger.info(f"Team 2 players (receiving): {len(team2_player_data)}")
+        logger.info(f"Current roster provided: {len(current_roster)} players")
+        logger.info(f"Roster size limit: {roster_size_limit}")
         logger.info(f"League averages provided: {bool(league_averages)}")
 
         # Get league scoring categories
@@ -109,10 +161,12 @@ def analyze_trade(league_id):
             trade_player = analyzer.create_trade_player(player_data, league_averages)
             players_in.append(trade_player)
 
-        # Run z-score based trade analysis
+        # Run z-score based trade analysis (supports multi-player trades)
         analysis = analyzer.analyze_trade(
             players_out=players_out,
             players_in=players_in,
+            current_roster=current_roster if current_roster else None,
+            roster_size_limit=roster_size_limit,
         )
 
         # Log the trade analysis

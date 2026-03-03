@@ -92,6 +92,10 @@ class TradeAnalysis:
     players_out: List[str]  # Names of players you're trading away
     players_in: List[str]  # Names of players you're receiving
 
+    # Multi-player trade support
+    additional_drops: List[Dict[str, Any]] = field(default_factory=list)  # Auto-dropped to fit roster
+    trade_type: str = "1-for-1"  # e.g., "2-for-1", "2-for-2", "3-for-1"
+
     # Metadata
     analyzed_at: datetime = field(default_factory=datetime.now)
 
@@ -110,6 +114,8 @@ class TradeAnalysis:
             'category_weaknesses': self.category_weaknesses,
             'players_out': self.players_out,
             'players_in': self.players_in,
+            'additional_drops': self.additional_drops,
+            'trade_type': self.trade_type,
             'analyzed_at': self.analyzed_at.isoformat(),
         }
 
@@ -154,20 +160,43 @@ class TradeAnalyzer:
         self,
         players_out: List[TradePlayer],
         players_in: List[TradePlayer],
+        current_roster: Optional[List[Dict]] = None,
+        roster_size_limit: Optional[int] = None,
     ) -> TradeAnalysis:
         """
         Analyze a proposed trade using z-score comparison.
 
+        Supports multi-player trades (1-for-1, 2-for-1, 2-for-2, 3-for-1, etc.)
+        and automatically determines additional drops needed to fit roster limits.
+
         Args:
             players_out: Players you're trading away
             players_in: Players you're receiving
+            current_roster: Full roster to check roster limits (optional)
+            roster_size_limit: Maximum roster size (optional, default 15)
 
         Returns:
-            TradeAnalysis with z-score based breakdown
+            TradeAnalysis with z-score based breakdown including additional_drops
         """
+        # Determine trade type
+        trade_type = f"{len(players_out)}-for-{len(players_in)}"
+
         logger.info(f"=== TRADE ANALYSIS START ===")
-        logger.info(f"Analyzing trade: {len(players_out)} out, {len(players_in)} in")
+        logger.info(f"Trade type: {trade_type}")
+        logger.info(f"Players out: {len(players_out)}, Players in: {len(players_in)}")
         logger.info(f"Categories being analyzed: {self.categories}")
+
+        # Calculate additional drops needed for roster management
+        additional_drops = []
+        additional_drop_players = []
+
+        if current_roster and roster_size_limit:
+            additional_drops, additional_drop_players = self._calculate_additional_drops(
+                players_out=players_out,
+                players_in=players_in,
+                current_roster=current_roster,
+                roster_size_limit=roster_size_limit,
+            )
 
         # 1. Calculate z-score impact
         logger.info("--- Players OUT (you're giving away) ---")
@@ -182,22 +211,35 @@ class TradeAnalyzer:
             logger.info(f"  {p.player_name}: z_score={p.z_score_value:+.3f}, games={p.projected_games}")
             z_in += p.z_score_value
 
-        net_z_change = z_in - z_out
+        # Include additional drops in z-score calculation
+        z_dropped = 0.0
+        if additional_drop_players:
+            logger.info("--- Additional DROPS (to fit roster) ---")
+            for p in additional_drop_players:
+                logger.info(f"  {p.player_name}: z_score={p.z_score_value:+.3f} (auto-drop)")
+                z_dropped += p.z_score_value
+
+        # Net change: what you get - (what you give + what you drop)
+        net_z_change = z_in - (z_out + z_dropped)
 
         # Total value (z-score × projected games)
         total_out = sum(p.total_value for p in players_out)
         total_in = sum(p.total_value for p in players_in)
-        total_value_change = total_in - total_out
+        total_dropped = sum(p.total_value for p in additional_drop_players)
+        total_value_change = total_in - (total_out + total_dropped)
 
         logger.info(f"--- Z-SCORE SUMMARY ---")
         logger.info(f"  Players OUT total z-score: {z_out:+.3f}")
         logger.info(f"  Players IN total z-score:  {z_in:+.3f}")
+        if z_dropped != 0:
+            logger.info(f"  Additional drops z-score:  {z_dropped:+.3f}")
         logger.info(f"  NET Z-SCORE CHANGE:        {net_z_change:+.3f} (positive = you gain)")
         logger.info(f"  Total value change:        {total_value_change:+.2f}")
 
-        # 2. Calculate per-category impact
-        category_changes = self._calculate_category_changes(players_out, players_in)
-        category_z_changes = self._calculate_category_z_changes(players_out, players_in)
+        # 2. Calculate per-category impact (include additional drops as losses)
+        all_players_out = list(players_out) + additional_drop_players
+        category_changes = self._calculate_category_changes(all_players_out, players_in)
+        category_z_changes = self._calculate_category_z_changes(all_players_out, players_in)
 
         # 3. Identify strengths and weaknesses
         strengths = []
@@ -236,7 +278,8 @@ class TradeAnalyzer:
             strengths=strengths,
             weaknesses=weaknesses,
             players_out=players_out,
-            players_in=players_in
+            players_in=players_in,
+            additional_drops=additional_drops
         )
 
         return TradeAnalysis(
@@ -252,6 +295,8 @@ class TradeAnalyzer:
             category_weaknesses=weaknesses,
             players_out=[p.player_name for p in players_out],
             players_in=[p.player_name for p in players_in],
+            additional_drops=additional_drops,
+            trade_type=trade_type,
         )
 
     def _get_stat_value(self, per_game_stats: Dict[str, float], category: str) -> float:
@@ -394,6 +439,136 @@ class TradeAnalyzer:
 
         return changes
 
+    def _calculate_additional_drops(
+        self,
+        players_out: List[TradePlayer],
+        players_in: List[TradePlayer],
+        current_roster: List[Dict],
+        roster_size_limit: int,
+    ) -> Tuple[List[Dict[str, Any]], List[TradePlayer]]:
+        """
+        Calculate additional drops needed to fit roster after trade.
+
+        For multi-player trades where you receive more players than you give,
+        this determines which players need to be dropped to stay under the limit.
+        Drops the LOWEST z-score players first (worst players = best drop candidates).
+
+        Args:
+            players_out: Players being traded away
+            players_in: Players being received
+            current_roster: Full current roster
+            roster_size_limit: Maximum roster size
+
+        Returns:
+            Tuple of (additional_drops as dicts, additional_drop_players as TradePlayer)
+        """
+        # Calculate net player change
+        net_player_change = len(players_in) - len(players_out)
+        current_roster_size = len(current_roster)
+        post_trade_size = current_roster_size + net_player_change
+
+        logger.info(f"--- ROSTER MANAGEMENT ---")
+        logger.info(f"  Current roster size: {current_roster_size}")
+        logger.info(f"  Net player change: {net_player_change:+d}")
+        logger.info(f"  Post-trade size: {post_trade_size}")
+        logger.info(f"  Roster limit: {roster_size_limit}")
+
+        # Check if additional drops are needed
+        additional_drops_needed = max(0, post_trade_size - roster_size_limit)
+
+        if additional_drops_needed == 0:
+            logger.info("  No additional drops needed")
+            return [], []
+
+        logger.info(f"  ⚠️ Need to drop {additional_drops_needed} additional player(s) to fit roster")
+
+        # Get IDs of players being traded away (don't consider them for dropping)
+        players_out_ids = {p.player_id for p in players_out}
+
+        # Find droppable players from current roster
+        droppable_candidates = []
+        logger.info(f"--- ANALYZING ROSTER FOR DROP CANDIDATES ---")
+
+        for player in current_roster:
+            player_id = player.get('player_id', 0)
+            player_name = player.get('name', 'Unknown')
+
+            # Skip players being traded away
+            if player_id in players_out_ids:
+                logger.debug(f"  Skipping {player_name}: being traded away")
+                continue
+
+            # Skip non-droppable players (ESPN flag)
+            if not player.get('droppable', True):
+                logger.info(f"  Skipping {player_name}: marked non-droppable")
+                continue
+
+            # Skip IR slot players
+            lineup_slot = player.get('lineup_slot_id') or player.get('lineupSlotId', 0)
+            if lineup_slot == 13:  # IR slot
+                logger.info(f"  Skipping {player_name}: IR slot")
+                continue
+
+            # Get z-score value - check multiple possible field names
+            z_score = None
+            for field_name in Z_SCORE_FIELD_NAMES:
+                if field_name in player and player[field_name] is not None:
+                    z_score = float(player[field_name])
+                    break
+
+            # Log what we found
+            logger.info(f"  Candidate: {player_name} | z_score_value={player.get('z_score_value', 'MISSING')} | "
+                       f"per_game_value={player.get('per_game_value', 'MISSING')} | resolved_z={z_score}")
+
+            # Store the resolved z_score for sorting
+            player['_resolved_z_score'] = z_score if z_score is not None else float('-inf')
+            droppable_candidates.append(player)
+
+        logger.info(f"  Found {len(droppable_candidates)} droppable candidates")
+
+        # Sort by z-score ASCENDING (lowest/worst first = best drop candidates)
+        # Using _resolved_z_score to avoid issues with None/0 confusion
+        droppable_candidates.sort(key=lambda p: p.get('_resolved_z_score', float('-inf')))
+
+        # Log sorted order
+        logger.info(f"--- SORTED DROP CANDIDATES (worst first) ---")
+        for i, p in enumerate(droppable_candidates):
+            z = p.get('_resolved_z_score', 0)
+            logger.info(f"  {i+1}. {p.get('name')}: z={z:+.2f}")
+
+        # Select worst N players to drop
+        players_to_drop = droppable_candidates[:additional_drops_needed]
+
+        if len(players_to_drop) < additional_drops_needed:
+            logger.error(f"  Not enough droppable players! Need {additional_drops_needed}, found {len(players_to_drop)}")
+
+        # Convert to output formats
+        additional_drops = []
+        additional_drop_players = []
+
+        logger.info(f"--- SELECTED FOR DROP ---")
+        for player in players_to_drop:
+            z_score = player.get('_resolved_z_score', 0)
+
+            additional_drops.append({
+                'name': player.get('name', 'Unknown'),
+                'player_id': player.get('player_id', 0),
+                'z_score_value': round(z_score, 2),
+                'position': player.get('position', 'UTIL'),
+            })
+
+            # Create TradePlayer for category calculations
+            trade_player = self.create_trade_player(player, self.league_averages)
+            additional_drop_players.append(trade_player)
+
+            logger.info(f"  ✓ Auto-drop: {player.get('name')} (z={z_score:+.2f}) - LOWEST z-score")
+
+        # Clean up temporary field
+        for player in droppable_candidates:
+            player.pop('_resolved_z_score', None)
+
+        return additional_drops, additional_drop_players
+
     def _calculate_fairness(
         self,
         net_z_change: float,
@@ -437,47 +612,58 @@ class TradeAnalyzer:
         strengths: List[str],
         weaknesses: List[str],
         players_out: List[TradePlayer],
-        players_in: List[TradePlayer]
+        players_in: List[TradePlayer],
+        additional_drops: Optional[List[Dict]] = None
     ) -> Tuple[str, str]:
         """Generate trade recommendation based on z-score analysis."""
 
         strengths_str = ', '.join(strengths[:3]).upper() if strengths else 'overall depth'
         weaknesses_str = ', '.join(weaknesses[:3]).upper() if weaknesses else 'overall value'
 
+        # Build trade type description
+        trade_type = f"{len(players_out)}-for-{len(players_in)}"
+        if additional_drops:
+            trade_type += f" (+ {len(additional_drops)} drop)"
+
         # Strong accept: significant positive z-score
         if net_z_change >= 1.5:
             recommendation = 'ACCEPT'
-            reason = (f"Strong accept. You gain {net_z_change:+.2f} z-score/game. "
+            reason = (f"Strong accept ({trade_type}). You gain {net_z_change:+.2f} z-score/game. "
                      f"Strengthens: {strengths_str}.")
 
         # Good accept: positive z-score
         elif net_z_change >= 0.5:
             recommendation = 'ACCEPT'
-            reason = (f"Good trade. You gain {net_z_change:+.2f} z-score/game. "
+            reason = (f"Good trade ({trade_type}). You gain {net_z_change:+.2f} z-score/game. "
                      f"Helps: {strengths_str}.")
 
         # Consider: close to even
         elif net_z_change >= -0.5:
             recommendation = 'CONSIDER'
             if strengths and weaknesses:
-                reason = (f"Fair trade ({net_z_change:+.2f} z-score/game). "
+                reason = (f"Fair trade ({trade_type}, {net_z_change:+.2f} z-score/game). "
                          f"Gain {', '.join(strengths[:2]).upper()}, "
                          f"lose {', '.join(weaknesses[:2]).upper()}. "
                          f"Accept if it fits your strategy.")
             else:
-                reason = f"Even trade ({net_z_change:+.2f} z-score/game). Accept based on roster needs."
+                reason = f"Even trade ({trade_type}, {net_z_change:+.2f} z-score/game). Accept based on roster needs."
 
         # Counter: slightly negative
         elif net_z_change >= -1.5:
             recommendation = 'COUNTER'
-            reason = (f"Slightly favors your partner ({net_z_change:+.2f} z-score/game). "
+            reason = (f"Slightly favors your partner ({trade_type}, {net_z_change:+.2f} z-score/game). "
                      f"Ask for more value or a different player.")
 
         # Reject: significantly negative
         else:
             recommendation = 'REJECT'
-            reason = (f"Bad trade. You lose {abs(net_z_change):.2f} z-score/game. "
+            reason = (f"Bad trade ({trade_type}). You lose {abs(net_z_change):.2f} z-score/game. "
                      f"Weakens: {weaknesses_str}.")
+
+        # Add note about additional drops if present
+        if additional_drops:
+            drop_names = [d['name'] for d in additional_drops]
+            reason += f" Note: Must also drop {', '.join(drop_names)} to fit roster."
 
         return recommendation, reason
 

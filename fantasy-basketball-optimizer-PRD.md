@@ -639,7 +639,54 @@ Users can configure trade suggestion filtering via inline settings panel:
 - "Analyze Trade" button opens full trade analyzer modal
 - Auto-refresh when settings change
 
-**3.5.6 Trade History**
+**3.5.6 Multi-Player Trade Support**
+
+The trade analyzer supports complex multi-player trades with automatic roster management.
+
+**Supported Trade Types:**
+- 1-for-1 (standard swap, no roster change)
+- 2-for-1 (receive 2, give 1, need to drop 1)
+- 1-for-2 (receive 1, give 2, opens 1 slot)
+- 2-for-2 (equal swap, no roster change)
+- 3-for-2 (receive 3, give 2, need to drop 1)
+- Any combination supported
+
+**Automatic Roster Management:**
+
+When receiving more players than giving, the system automatically identifies which roster players to drop:
+
+1. **Calculate Overflow:** `additional_drops = players_received - players_given`
+2. **Exclude Trade Players:** Don't consider players involved in the trade
+3. **Sort by Z-Score:** Lowest z-score first (worst performers = best drop candidates)
+4. **Auto-Select Drops:** Recommend dropping the N lowest z-score players
+
+**Z-Score Resolution for Drops:**
+Multiple field names checked: `z_score_value`, `per_game_value`, `zscore`, `z_value`
+- Properly handles `0` vs `None` (0 is a valid z-score, None means unknown)
+- Falls back to `-inf` for players without z-scores (deprioritizes unknowns)
+
+**Dynamic Roster Limit:**
+- Roster size fetched from ESPN league settings
+- Excludes IR slots (IR, IR+, IL, IL+) from active roster count
+- Cached in League model's `active_roster_limit` field
+- Auto-refreshed if not cached
+
+**API Response Additions:**
+```json
+{
+  "trade_type": "2_for_1",
+  "additional_drops": [
+    {
+      "name": "Player Name",
+      "z_score_value": -0.82,
+      "position": "SG"
+    }
+  ],
+  "total_players_after": 13
+}
+```
+
+**3.5.7 Trade History**
 - Log of analyzed trades stored in Trade_History table
 - Tracks: teams involved, players exchanged, z-score differential
 - Records whether trade was suggested by system
@@ -652,7 +699,40 @@ Users can configure trade suggestion filtering via inline settings panel:
 - Calculate projected value for remainder of season
 - Compare to current roster players
 
-**3.6.2 Recommendation Algorithm**
+**3.6.2 Z-Score Based Waiver Analyzer**
+
+The waiver analyzer uses the same z-score system as trades and start limit optimization.
+
+**Core Features:**
+- **Click-to-Analyze:** Click any waiver target in dashboard to open full analysis
+- **Z-Score Based Add/Drop:** Compares free agent z-score to roster's worst player
+- **Net Benefit Calculation:** `net_gain = free_agent_z - worst_roster_player_z`
+- **Auto-Drop Suggestion:** Identifies lowest z-score roster player as optimal drop
+- **Category Impact:** Shows which categories improve/hurt from the move
+
+**Availability Filtering:**
+All waiver suggestions automatically filter out unavailable players:
+- Players marked "out for season" by ESPN
+- Long-term injuries (expected return > 14 days away)
+- Suspended players (`SUSPENSION` status)
+- Inactive players (`INACTIVE` status)
+- Only suggests immediately playable pickups
+
+**Recommendation Grading:**
+| Net Z-Score | Grade | Recommendation |
+|-------------|-------|----------------|
+| > +1.5 | A+ | ADD (significant upgrade) |
+| +1.0 to +1.5 | A | ADD (clear improvement) |
+| +0.5 to +1.0 | B | ADD (moderate gain) |
+| 0.0 to +0.5 | C | CONSIDER (marginal) |
+| < 0.0 | D/F | PASS (not beneficial) |
+
+**API Endpoints:**
+- `POST /api/leagues/:id/waivers/analyze` - Analyze specific add/drop
+- `GET /api/leagues/:id/waivers/suggestions` - Get ranked suggestions with filtering
+- `GET /api/leagues/:id/waivers/recommendations` - Legacy endpoint
+
+**3.6.3 Recommendation Algorithm**
 - **Factors considered:**
   - Projected stats vs current roster
   - Streaming value (short-term adds)
@@ -665,7 +745,7 @@ Users can configure trade suggestion filtering via inline settings panel:
   - Category fit for user's team
   - Confidence level
 
-**3.6.3 Waiver Wire Interface**
+**3.6.4 Waiver Wire Interface**
 - Ranked list of top available players
 - Filter by position
 - Sort by different metrics (projected points, impact score, etc.)
@@ -676,7 +756,7 @@ Users can configure trade suggestion filtering via inline settings panel:
   - Injury status
   - Schedule analysis
 
-**3.6.4 Streaming Recommendations (H2H)**
+**3.6.5 Streaming Recommendations (H2H)**
 - Identify players with favorable weekly schedules
 - Back-to-back and 4-game week flags
 - Optimal streaming spots based on roster construction
@@ -736,6 +816,8 @@ CREATE TABLE leagues (
     refresh_schedule TIME DEFAULT '03:00:00',
     projection_method VARCHAR(20) DEFAULT 'adaptive', -- 'adaptive' or 'flat_rate'
     flat_rate_value DECIMAL(3,2) DEFAULT 0.85, -- Used when projection_method is 'flat_rate'
+    trade_suggestion_mode VARCHAR(20) DEFAULT 'normal', -- 'conservative', 'normal', 'aggressive'
+    active_roster_limit INTEGER, -- Cached from ESPN, excludes IR slots
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, espn_league_id, season)
 );
@@ -1613,6 +1695,30 @@ The primary projection approach uses the tiered weighting system documented in S
 - Improved z-score calculations for all stat types
 - Added detailed logging for debugging trade suggestions
 
+### 17.3 March 2026 Updates
+
+**Multi-Player Trade Support**
+- Added support for 2-for-1, 2-for-2, 3-for-1, and all other trade combinations
+- Automatic roster management identifies players to drop when receiving more than giving
+- Trade type badges displayed in UI (e.g., "2-for-1")
+
+**Auto-Drop Logic Fix**
+- **Issue:** Auto-drop was selecting high-value players (e.g., Scottie Barnes +3.56) instead of lowest z-score players
+- **Root Cause 1:** `p.get('z_score_value') or p.get('per_game_value', 0)` treats 0 as falsy, falling back incorrectly
+- **Root Cause 2:** `team_rosters` sent to frontend didn't have z_score_value calculated
+- **Fix:** Added `_resolved_z_score` field with proper None vs 0 handling, added `_add_z_scores_to_all_rosters()` to dashboard
+
+**Dynamic Roster Limit**
+- **Issue:** Roster limit was hardcoded to 15 instead of fetched from ESPN
+- **Fix:** Added `active_roster_limit` to League model, `get_roster_size_info()` to ESPN client
+- **Impact:** Correctly excludes IR slots (IR, IR+, IL, IL+) from active roster count
+
+**Waiver Availability Filtering**
+- Waiver suggestions now filter out unavailable players
+- Excludes: OUT status, SUSPENSION, INACTIVE, out_for_season
+- Excludes long-term injuries (expected return > 14 days)
+- Only suggests immediately playable pickups
+
 ---
 
 ## 18. Conclusion
@@ -1621,23 +1727,27 @@ The Fantasy Basketball Optimizer is a comprehensive web application that combine
 
 The project is structured for iterative development with clear phases, allowing for incremental feature delivery and continuous testing. With a focus on user experience, performance, and accuracy, this app has the potential to become an essential tool for serious fantasy basketball players.
 
-**Current State (February 2026):**
-- Trade analyzer and suggestions fully functional
+**Current State (March 2026):**
+- Trade analyzer fully functional with multi-player support (2-for-1, 3-for-2, etc.)
+- Automatic roster management with smart drops (lowest z-score first)
+- Dynamic roster limit fetching from ESPN (excludes IR slots)
+- Waiver wire analyzer complete with z-score based add/drop
+- Availability filtering for waiver suggestions (filters injured/suspended)
 - All major z-score inconsistencies resolved
 - Dashboard UI polished with responsive settings
 - Roto standings calculations accurate with proper tie handling
 
 **Next Steps:**
-1. Waiver Wire Analyzer implementation
-2. Advanced Trade Features (multi-player trade evaluation)
-3. H2H matchup analysis improvements
-4. Historical Performance Tracking
-5. Mobile responsive design refinements
+1. H2H matchup analysis improvements
+2. Historical Performance Tracking
+3. Mobile responsive design refinements
+4. ML model training and integration
+5. Email notifications (future)
 
 ---
 
-**Document Version:** 1.3
-**Last Updated:** February 26, 2026
-**Changes:** Added Bug Fixes section (17.1), Recent Improvements (17.2), updated Current State
+**Document Version:** 1.4
+**Last Updated:** March 2, 2026
+**Changes:** Added Multi-Player Trade Support (3.5.6), Z-Score Based Waiver Analyzer (3.6.2), updated Current State
 **Author:** Milo (with Claude)
 **Status:** Active Development

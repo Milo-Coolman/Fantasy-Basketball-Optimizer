@@ -435,6 +435,7 @@ function LeagueDashboard() {
             myCurrentRank={user_team?.current_rank || 5}
             myCurrentRotoPoints={user_team?.roto_points || 50}
             numTeams={league?.num_teams || currentStandingsData.length || 10}
+            rosterSizeLimit={league?.active_roster_limit || 13}
             showTradeAnalyzer={true}
             onSettingsChange={() => {
               // Trade settings changed - refresh to get new suggestions

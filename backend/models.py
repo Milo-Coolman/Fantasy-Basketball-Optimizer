@@ -153,6 +153,11 @@ class League(db.Model):
     # 'aggressive': Only trades that benefit you (0.0 to +1.5 z-score)
     trade_suggestion_mode = db.Column(db.String(20), default='normal')
 
+    # Roster limit settings (cached from ESPN)
+    # active_roster_limit: Number of active roster slots (excluding IR/IL slots)
+    # This is dynamically fetched from ESPN and cached for faster trade analysis
+    active_roster_limit = db.Column(db.Integer, nullable=True)
+
     # Relationships
     teams = db.relationship(
         'Team',
@@ -217,6 +222,7 @@ class League(db.Model):
             'projection_method': self.projection_method or 'adaptive',
             'flat_game_rate': self.flat_game_rate or 0.85,
             'trade_suggestion_mode': self.trade_suggestion_mode or 'normal',
+            'active_roster_limit': self.active_roster_limit,
         }
         if include_settings:
             data['roster_settings'] = self.roster_settings

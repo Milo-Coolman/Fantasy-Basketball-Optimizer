@@ -301,11 +301,108 @@ Auto-generates trade opportunities based on projected category weaknesses.
 - Auto-saves on mode change
 - Settings accessible via gear icon in section header
 
-### 9. Waiver Wire Recommendations
-- Ranked list of available free agents
-- Impact score (0-100) for each player
-- Add/drop suggestions
-- Streaming recommendations for H2H leagues (favorable weekly schedules)
+### 8.2 Multi-Player Trade Support
+
+Supports complex multi-player trades (2-for-1, 2-for-2, 3-for-1, etc.) with automatic roster management.
+
+**Trade Types Supported:**
+| Trade Type | Players Given | Players Received | Roster Impact |
+|------------|---------------|------------------|---------------|
+| 1-for-1 | 1 | 1 | No change |
+| 2-for-1 | 1 | 2 | Need to drop 1 |
+| 1-for-2 | 2 | 1 | Open 1 slot |
+| 2-for-2 | 2 | 2 | No change |
+| 3-for-2 | 2 | 3 | Need to drop 1 |
+
+**Automatic Roster Management:**
+When a trade creates a roster overflow (receiving more players than giving):
+1. **Calculate Overflow:** `additional_drops = players_received - players_given`
+2. **Identify Drop Candidates:** All roster players except:
+   - Players involved in the trade
+   - Players already being dropped
+3. **Sort by Z-Score:** Lowest z-score first (worst players = best drop candidates)
+4. **Auto-Select Drops:** Recommend dropping the N lowest z-score players
+
+**Z-Score Resolution:**
+Multiple field names are checked for z-score value:
+```python
+Z_SCORE_FIELD_NAMES = ['z_score_value', 'per_game_value', 'zscore', 'z_value']
+```
+- Handles both dashboard-calculated and analyzer-calculated z-scores
+- Falls back to `-inf` if no z-score found (deprioritizes unknowns)
+- Properly handles `0` vs `None` (0 is a valid z-score)
+
+**Dynamic Roster Limit:**
+- Fetches active roster size from ESPN (excluding IR slots)
+- Caches in `active_roster_limit` field in League model
+- IR slots identified by names: 'IR', 'IR+', 'IL', 'IL+'
+
+**API Endpoint:**
+```
+POST /api/leagues/:id/trades/analyze
+Body: {
+  "team1_id": 1,
+  "team1_players": [123, 456],  // Players given
+  "team2_id": 2,
+  "team2_players": [789],       // Players received
+  "current_roster": [...],      // Full roster data with z-scores
+  "roster_size_limit": 13       // Optional, auto-fetched if not provided
+}
+
+Response includes:
+- "additional_drops": [{ player info with z-scores }]
+- "trade_type_badge": "2-for-1"
+```
+
+**UI Display:**
+- Trade type badge (e.g., "2-for-1") shown in analysis results
+- Additional drops warning with player names if roster overflow
+- Z-score values displayed for all dropped players
+
+**Key Files:**
+- `backend/analysis/trade_analyzer.py` - `_calculate_additional_drops()`
+- `backend/api/trades.py` - Dynamic roster limit fetching
+- `backend/api/dashboard.py` - `_add_z_scores_to_all_rosters()`
+- `frontend/src/components/QuickInsights.js` - TradeAnalyzerModal updates
+
+### 9. Waiver Wire Analyzer (Z-Score Based)
+
+The waiver wire analyzer uses the same z-score system as trade and start limit optimization.
+
+**Core Features:**
+- **Click-to-Analyze:** Click any waiver target in dashboard to get full analysis
+- **Z-Score Based Add/Drop:** Compares free agent z-score to roster's worst player
+- **Net Benefit Calculation:** `net_gain = free_agent_z - worst_roster_player_z`
+- **Auto-Drop Suggestion:** Identifies lowest z-score player as optimal drop candidate
+- **Category Impact:** Shows which categories improve/hurt from the move
+
+**Availability Filtering:**
+All waiver suggestions filter out unavailable players:
+- Players marked "out for season" by ESPN
+- Long-term injuries (expected return > 14 days away)
+- Suspended players (`SUSPENSION` status)
+- Inactive players (`INACTIVE` status)
+- Only suggests immediately playable pickups
+
+**Recommendation Engine:**
+| Net Z-Score | Grade | Recommendation |
+|-------------|-------|----------------|
+| > +1.5 | A+ | ADD (significant upgrade) |
+| +1.0 to +1.5 | A | ADD (clear improvement) |
+| +0.5 to +1.0 | B | ADD (moderate gain) |
+| 0.0 to +0.5 | C | CONSIDER (marginal) |
+| < 0.0 | D/F | PASS (not beneficial) |
+
+**Backend Endpoints:**
+- `POST /api/leagues/:id/waivers/analyze` - Analyze specific add/drop
+- `GET /api/leagues/:id/waivers/suggestions` - Get ranked suggestions
+- `GET /api/leagues/:id/waivers/recommendations` - Legacy endpoint
+
+**Key Files:**
+- `backend/analysis/waiver_analyzer.py` - WaiverAnalyzer class
+- `backend/api/waivers.py` - API endpoints with availability filtering
+- `backend/api/dashboard.py` - Waiver targets in quick insights
+- `frontend/src/components/QuickInsights.js` - WaiverTargets with click-to-analyze
 
 ### 10. Dashboard
 - Current vs projected standings
@@ -353,6 +450,27 @@ Auto-generates trade opportunities based on projected category weaknesses.
 - **Issue:** Players with low early-season game rates were severely under-projected
 - **Fix:** 75% minimum floor for players with 5+ games in adaptive mode
 - **Impact:** More reasonable projections for players recovering from early issues
+
+---
+
+## Key Bug Fixes (March 2026)
+
+### Auto-Drop Logic Fix
+- **Issue:** Auto-drop in multi-player trades was selecting high-value players (e.g., Scottie Barnes +3.56 z-score) instead of lowest z-score players
+- **Root Cause 1:** `p.get('z_score_value') or p.get('per_game_value', 0)` treats 0 as falsy, falling back incorrectly
+- **Root Cause 2:** `team_rosters` sent to frontend didn't have `z_score_value` calculated
+- **Fix:** Added `_resolved_z_score` field with proper `None` vs `0` handling; added `_add_z_scores_to_all_rosters()` helper in dashboard
+- **Impact:** Auto-drop now correctly identifies lowest z-score players as drop candidates
+
+### Hardcoded Roster Limit Fix
+- **Issue:** Roster limit was hardcoded to 15 instead of fetched from ESPN
+- **Fix:** Added `active_roster_limit` to League model, `get_roster_size_info()` to ESPN client
+- **Impact:** Correctly excludes IR slots (IR, IR+, IL, IL+) from active roster count
+
+### Z-Score Field Resolution
+- **Issue:** Different parts of the app used different field names for z-scores (`z_score_value`, `per_game_value`, `zscore`)
+- **Fix:** Added comprehensive field name checking in `_calculate_additional_drops()`
+- **Impact:** Consistent z-score resolution across all player data sources
 
 ---
 
@@ -471,6 +589,47 @@ worst_player = candidates[0]  # Lowest z-score = best to drop
 - ProjectionSettings shows "Refreshing projections..." message
 - TradeOpportunities settings panel closes and triggers refresh
 
+### Multi-Player Trade Support (March 2026)
+**Status:** Implemented
+
+**Feature:**
+- Support for any trade size (2-for-1, 3-for-2, etc.)
+- Automatic roster overflow detection
+- Smart drop recommendations based on z-score
+- Trade type badges in UI
+
+**Implementation:**
+- `_calculate_additional_drops()` in trade_analyzer.py
+- Dynamic roster limit fetching from ESPN
+- Z-score resolution across multiple field names
+- Frontend display of additional drops warning
+
+**Key Files:**
+- `backend/analysis/trade_analyzer.py` - Drop logic
+- `backend/api/trades.py` - Roster limit handling
+- `backend/api/dashboard.py` - Z-score calculation for all rosters
+- `frontend/src/components/QuickInsights.js` - UI updates
+
+### Waiver Wire Analyzer (March 2026)
+**Status:** Implemented
+
+**Feature:**
+- Click-to-analyze any waiver target
+- Z-score based add/drop evaluation
+- Availability filtering (excludes injured/suspended)
+- Category impact analysis
+
+**Implementation:**
+- WaiverAnalyzer class with z-score comparison
+- Availability check before suggesting players
+- Expected return date filtering (>14 days = unavailable)
+- Grade assignment based on net z-score gain
+
+**Key Files:**
+- `backend/analysis/waiver_analyzer.py` - WaiverAnalyzer class
+- `backend/api/waivers.py` - API endpoints with filtering
+- `frontend/src/components/QuickInsights.js` - Click handler
+
 ---
 
 ## Database Schema (Key Tables)
@@ -487,6 +646,7 @@ worst_player = candidates[0]  # Lowest z-score = best to drop
 - projection_method ("adaptive" or "flat_rate")
 - flat_rate_value (decimal, 0.0-1.0)
 - trade_suggestion_mode ("conservative", "normal", "aggressive")
+- active_roster_limit (integer, cached from ESPN, excludes IR slots)
 
 ### Teams
 - id, league_id, espn_team_id, team_name, owner_name
@@ -793,7 +953,7 @@ npm run build
 
 ## Current Status
 
-**Phase:** Phase 4 - Core Features (Nearing Completion)
+**Phase:** Phase 4 - Core Features (Complete)
 **Completed:**
 - Project structure and Flask backend
 - SQLite database with migrations (Flask-Migrate)
@@ -805,6 +965,9 @@ npm run build
 - Z-score value system implementation
 - Trade analyzer with category impact analysis
 - Trade suggestions generator with configurable aggressiveness
+- Multi-player trade support (2-for-1, 3-for-2, etc.)
+- Automatic roster management with smart drops
+- Dynamic roster limit fetching from ESPN
 - Dashboard with standings, projections, quick insights
 - Trade Opportunities section with inline settings
 - Category analysis (strengths/weaknesses)
@@ -813,19 +976,23 @@ npm run build
 - Tie handling for Roto category rankings
 - Counting stats rounding (STL, BLK, etc.)
 - FG%/FT% z-score fixes in trade analyzer
+- Waiver Wire Analyzer with click-to-analyze
+- Availability filtering (filters out injured/suspended players)
 
 **Current State:**
-- Trade analyzer and suggestions fully functional
+- Trade analyzer fully functional with multi-player support
+- Waiver wire analyzer complete with z-score based add/drop
 - All major z-score inconsistencies resolved
 - Dashboard UI polished with responsive settings
 - Roto standings calculations are accurate with proper tie handling
+- Dynamic roster limits working (excludes IR slots)
 
 **Next Steps:**
-1. Waiver Wire Analyzer (next priority)
-2. Advanced Trade Features (multi-player trade evaluation)
-3. H2H matchup analysis improvements
-4. Historical Performance Tracking
-5. Mobile responsive design refinements
+1. H2H matchup analysis improvements
+2. Historical Performance Tracking
+3. Mobile responsive design refinements
+4. ML model training and integration
+5. Email notifications (future)
 
 ---
 
@@ -841,5 +1008,5 @@ npm run build
 
 ---
 
-**Last Updated:** February 26, 2026
-**Version:** 1.5 (Bug Fixes, Stats View Toggle, Auto-Refresh)
+**Last Updated:** March 2, 2026
+**Version:** 1.6 (Multi-Player Trades, Waiver Analyzer, Dynamic Roster Limits)
