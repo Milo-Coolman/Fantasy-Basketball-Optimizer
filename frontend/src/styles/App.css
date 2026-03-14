@@ -5577,3 +5577,382 @@ a:hover {
     max-height: 200px;
   }
 }
+
+/* =============================================================================
+   Player Rankings
+   ============================================================================= */
+
+.player-rankings-panel {
+  background: var(--bg-card);
+  border-radius: var(--border-radius-lg);
+  border: 1px solid var(--border-color);
+  margin-top: var(--spacing-lg);
+}
+
+.player-rankings-panel .panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.player-rankings-panel .panel-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  color: var(--text-primary);
+}
+
+.player-rankings-panel .header-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+.player-rankings-panel .panel-content {
+  padding: var(--spacing-lg);
+}
+
+/* Filters */
+.rankings-filters {
+  display: flex;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+  flex-wrap: wrap;
+}
+
+.rankings-filters .filter-group {
+  flex: 1;
+  min-width: 150px;
+}
+
+.rankings-filters .search-input {
+  width: 100%;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.rankings-filters .search-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.rankings-filters .filter-select {
+  width: 100%;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+/* Summary row */
+.rankings-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-md);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.summary-cache {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* Table container */
+.rankings-table-container {
+  overflow-x: auto;
+  margin: 0 calc(-1 * var(--spacing-lg));
+  padding: 0 var(--spacing-lg);
+}
+
+/* Rankings table */
+.rankings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.rankings-table th {
+  text-align: left;
+  padding: var(--spacing-sm) var(--spacing-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.rankings-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.rankings-table th.sortable:hover {
+  color: var(--color-primary);
+}
+
+.rankings-table td {
+  padding: var(--spacing-sm);
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+.rankings-table .player-row {
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.rankings-table .player-row:hover {
+  background: var(--bg-tertiary);
+}
+
+.rankings-table .player-row.free-agent {
+  opacity: 0.85;
+}
+
+/* Column widths */
+.rankings-table .col-rank {
+  width: 40px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.rankings-table .col-player {
+  min-width: 180px;
+}
+
+.rankings-table .col-team {
+  width: 50px;
+  text-align: center;
+}
+
+.rankings-table .col-pos {
+  width: 60px;
+  text-align: center;
+}
+
+.rankings-table .col-gp {
+  width: 40px;
+  text-align: center;
+}
+
+.rankings-table .col-total-z {
+  width: 70px;
+  text-align: right;
+  font-weight: 600;
+}
+
+.rankings-table .col-category {
+  width: 55px;
+  text-align: right;
+}
+
+/* Player name cell */
+.player-name-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.player-name {
+  font-weight: 500;
+}
+
+.injury-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  background: var(--color-error);
+  color: white;
+  font-size: 0.65rem;
+  font-weight: 600;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.fa-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  background: var(--color-secondary);
+  color: white;
+  font-size: 0.65rem;
+  font-weight: 600;
+  border-radius: 4px;
+}
+
+/* Z-score colors */
+.z-excellent {
+  color: var(--color-success) !important;
+}
+
+.z-above-avg {
+  color: var(--text-primary);
+}
+
+.z-below-avg {
+  color: var(--text-muted);
+}
+
+.z-poor {
+  color: var(--color-error) !important;
+}
+
+/* Load more */
+.load-more-container {
+  text-align: center;
+  margin-top: var(--spacing-lg);
+}
+
+/* Player Detail Modal */
+.player-detail-modal {
+  max-width: 500px;
+}
+
+.player-detail-modal .modal-header h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.player-detail-modal .player-meta {
+  display: flex;
+  gap: var(--spacing-md);
+  flex-wrap: wrap;
+  margin-bottom: var(--spacing-lg);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.player-detail-modal .meta-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.player-detail-modal .fa-indicator {
+  color: var(--color-warning);
+}
+
+.player-detail-modal .total-z-display {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-md);
+  background: var(--bg-tertiary);
+  border-radius: var(--border-radius);
+  margin-bottom: var(--spacing-lg);
+}
+
+.player-detail-modal .total-z-display .label {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.player-detail-modal .total-z-display .value {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.player-detail-modal .category-breakdown h4,
+.player-detail-modal .per-game-stats h4 {
+  margin: 0 0 var(--spacing-sm) 0;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.player-detail-modal .category-grid,
+.player-detail-modal .stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: var(--spacing-sm);
+}
+
+.player-detail-modal .category-item,
+.player-detail-modal .stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--spacing-sm);
+  background: var(--bg-secondary);
+  border-radius: var(--border-radius);
+}
+
+.player-detail-modal .cat-label,
+.player-detail-modal .stat-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.player-detail-modal .cat-value {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.player-detail-modal .stat-value {
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.player-detail-modal .per-game-stats {
+  margin-top: var(--spacing-lg);
+}
+
+/* Loading and error states */
+.player-rankings-panel .loading-container,
+.player-rankings-panel .error-container {
+  text-align: center;
+  padding: var(--spacing-xl);
+}
+
+.player-rankings-panel .error-message {
+  color: var(--color-error);
+  font-weight: 600;
+  margin-bottom: var(--spacing-sm);
+}
+
+.player-rankings-panel .error-details {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin-bottom: var(--spacing-md);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .rankings-filters {
+    flex-direction: column;
+  }
+
+  .rankings-filters .filter-group {
+    min-width: 100%;
+  }
+
+  .rankings-summary {
+    flex-direction: column;
+    gap: var(--spacing-xs);
+    text-align: center;
+  }
+
+  .rankings-table {
+    font-size: 0.8rem;
+  }
+
+  .rankings-table .col-player {
+    min-width: 140px;
+  }
+}

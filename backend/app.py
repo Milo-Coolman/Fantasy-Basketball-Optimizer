@@ -119,6 +119,7 @@ def register_blueprints(app):
     from backend.api.trades import trades_bp
     from backend.api.waivers import waivers_bp
     from backend.api.dashboard import dashboard_bp
+    from backend.api.players import players_bp
 
     # Register blueprints with URL prefixes
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
@@ -127,6 +128,7 @@ def register_blueprints(app):
     app.register_blueprint(trades_bp, url_prefix='/api')
     app.register_blueprint(waivers_bp, url_prefix='/api')
     app.register_blueprint(dashboard_bp, url_prefix='/api')
+    app.register_blueprint(players_bp, url_prefix='/api')
 
 
 def register_error_handlers(app):

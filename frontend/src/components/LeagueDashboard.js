@@ -7,6 +7,7 @@ import CategoryComparisonChart from './CategoryComparisonChart';
 import QuickInsights from './QuickInsights';
 import StartLimitsInfo from './StartLimitsInfo';
 import ProjectionSettings from './ProjectionSettings';
+import PlayerRankings from './PlayerRankings';
 
 /**
  * LeagueDashboard - Comprehensive league view with standings, projections, and insights
@@ -468,6 +469,9 @@ function LeagueDashboard() {
           />
         )}
       </div>
+
+      {/* Player Rankings Section */}
+      <PlayerRankings leagueId={parseInt(leagueId)} />
     </div>
   );
 }

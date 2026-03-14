@@ -782,6 +782,195 @@ All waiver suggestions automatically filter out unavailable players:
 - Display preferences (dark mode, compact view, etc.)
 - Multiple league management
 
+### 3.8 Player Rankings
+
+A comprehensive player ranking system that evaluates all NBA players using league-specific z-scores, enabling users to identify undervalued players, compare across categories, and make informed roster decisions.
+
+**3.8.1 Overview**
+- League-specific player rankings for all NBA players
+- Z-score based ranking using the league's scoring categories
+- Shows total z-score and per-category z-scores
+- Combines rostered players and free agents into a unified ranking
+
+**3.8.2 Data Source**
+- **Player Pool:** All NBA players (rostered + free agents combined, ~450+ players)
+- **League-Wide Averages:** Z-score calculation uses mean/std from ALL NBA players, not just rostered players
+- **Fair Comparison:** Standard deviation across entire NBA player pool ensures accurate relative rankings
+- **Minimum Games:** Only players with ≥5 games played are included (filters out injured/inactive players)
+
+**3.8.3 Z-Score Calculation**
+
+For each scoring category in the league:
+```
+z_score = (player_stat - league_wide_mean) / league_wide_std_dev
+```
+
+**Category Handling:**
+- **Counting Stats (PTS, REB, AST, STL, BLK, 3PM):** Higher values = positive z-score
+- **Turnovers (TO):** Sign flipped (lower TO = positive z-score)
+- **Percentage Stats (FG%, FT%):** Multiplied by 100 before calculation (0.476 → 47.6)
+
+**Total Z-Score:**
+```
+total_z_score = Σ (z_score for each league category)
+```
+
+**3.8.4 User Interface Features**
+
+**Sortable Table:**
+- Default sort: Total z-score (descending, best players first)
+- Click any column header to sort by that category
+- First click: Descending (best to worst)
+- Second click: Ascending (worst to best)
+- Visual indicator for current sort column and direction
+
+**Filtering Options:**
+- **Position Filter:** Dropdown with All, PG, SG, SF, PF, C options
+- **Search Bar:** Filter by player name or NBA team abbreviation
+- **Combined Filtering:** Position and search filters work together
+
+**Player Details:**
+- Click any player row to view detailed stats card
+- Shows per-game stats, recent performance, injury status
+- Category-by-category z-score breakdown
+
+**Visual Indicators:**
+- **Color-Coded Z-Scores:**
+  - Green: z > 1.0 (excellent, top-tier performance)
+  - Black: 0 < z < 1.0 (above average)
+  - Gray: -1.0 < z < 0 (below average)
+  - Red: z < -1.0 (poor, significantly below average)
+- **Injury Status:** Icons/badges for DTD, O, IR status
+- **Roster Status:** Indicator showing if player is rostered or free agent
+
+**3.8.5 Performance Optimization**
+
+**Caching Strategy:**
+- 24-hour cache to avoid recalculating on every page load
+- Cache key: `player_rankings_{league_id}`
+- Cache invalidated when league data refreshes
+- Background refresh available for future optimization
+
+**Data Loading:**
+- Initial load fetches all players in single API call
+- Client-side filtering and sorting for responsiveness
+- Pagination optional for very large datasets (future)
+
+**3.8.6 Backend Implementation**
+
+**API Endpoint:**
+```
+GET /api/leagues/{id}/player-rankings
+```
+
+**Query Parameters:**
+- `force_refresh` (optional): Boolean to bypass cache
+
+**Response Format:**
+```json
+{
+  "players": [
+    {
+      "id": 12345,
+      "name": "Player Name",
+      "team": "LAL",
+      "position": "PG",
+      "games_played": 45,
+      "injury_status": null,
+      "is_rostered": true,
+      "roster_team": "Team Name",
+      "total_z_score": 8.45,
+      "category_z_scores": {
+        "PTS": 2.15,
+        "REB": 0.82,
+        "AST": 1.94,
+        "STL": 0.45,
+        "BLK": 0.12,
+        "3PM": 1.35,
+        "FG%": 0.88,
+        "FT%": 0.74,
+        "TO": -0.15
+      },
+      "per_game_stats": {
+        "PTS": 25.4,
+        "REB": 7.2,
+        "AST": 8.1,
+        ...
+      }
+    },
+    ...
+  ],
+  "league_averages": {
+    "PTS": { "mean": 12.5, "std": 6.2 },
+    "REB": { "mean": 4.8, "std": 2.1 },
+    ...
+  },
+  "generated_at": "2026-03-14T10:30:00Z",
+  "cache_expires_at": "2026-03-15T10:30:00Z"
+}
+```
+
+**Calculation Logic:**
+1. Fetch all rostered players from all teams in league
+2. Fetch all free agents from ESPN
+3. Combine into single player list
+4. Filter to players with ≥5 games played
+5. Calculate league-wide mean and std for each category
+6. Compute z-scores for each player in each category
+7. Sum category z-scores for total z-score
+8. Cache results with 24-hour TTL
+
+**3.8.7 Frontend Implementation**
+
+**Component Location:**
+- New tab in league dashboard: "Player Rankings"
+- Accessible alongside Trade Opportunities, Waiver Targets tabs
+- Full-width table for maximum data visibility
+
+**Component Structure:**
+```
+PlayerRankings/
+├── PlayerRankingsTable.js    # Main sortable table
+├── PlayerRankingsFilters.js  # Position dropdown, search bar
+├── PlayerRankingsRow.js      # Individual player row
+├── PlayerDetailModal.js      # Click-to-view detail card
+└── ZScoreCell.js             # Color-coded z-score display
+```
+
+**State Management:**
+- Local state for sort column, sort direction, filters
+- API data cached in component or context
+- Loading and error states handled
+
+**3.8.8 Use Cases**
+
+**Waiver Wire Analysis:**
+- Identify undervalued free agents with high total z-scores
+- Find category specialists available on waivers
+- Compare free agent z-scores to your roster's weakest players
+
+**Trade Evaluation:**
+- Compare any two players directly using their z-scores
+- Identify trade targets strong in your weak categories
+- Evaluate trade offers by comparing total z-scores
+
+**Draft Preparation:**
+- Rank all players by total value for draft strategy
+- Identify category specialists for punt builds
+- Understand positional scarcity across the league
+
+**Roster Optimization:**
+- Find your roster's weakest players (lowest z-scores)
+- Identify which categories are dragging down your total
+- Spot streaming opportunities (high z-score in specific cats)
+
+**3.8.9 Future Enhancements**
+- Customizable category weights (user-defined importance)
+- Historical z-score trends (last 7/15/30 days)
+- Export rankings to CSV
+- Comparison mode (select multiple players to compare)
+- Integration with trade analyzer (auto-suggest based on z-scores)
+
 ---
 
 ## 4. Database Schema
@@ -1738,16 +1927,17 @@ The project is structured for iterative development with clear phases, allowing 
 - Roto standings calculations accurate with proper tie handling
 
 **Next Steps:**
-1. H2H matchup analysis improvements
-2. Historical Performance Tracking
-3. Mobile responsive design refinements
-4. ML model training and integration
-5. Email notifications (future)
+1. **Player Rankings (Next Priority)** - Universal z-score based player rankings (see Section 3.8)
+2. H2H matchup analysis improvements
+3. Historical Performance Tracking
+4. Mobile responsive design refinements
+5. ML model training and integration
+6. Email notifications (future)
 
 ---
 
-**Document Version:** 1.4
-**Last Updated:** March 2, 2026
-**Changes:** Added Multi-Player Trade Support (3.5.6), Z-Score Based Waiver Analyzer (3.6.2), updated Current State
+**Document Version:** 1.5
+**Last Updated:** March 14, 2026
+**Changes:** Added Player Rankings feature (Section 3.8), updated Next Steps priority
 **Author:** Milo (with Claude)
 **Status:** Active Development

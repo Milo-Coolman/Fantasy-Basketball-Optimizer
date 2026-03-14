@@ -630,6 +630,102 @@ worst_player = candidates[0]  # Lowest z-score = best to drop
 - `backend/api/waivers.py` - API endpoints with filtering
 - `frontend/src/components/QuickInsights.js` - Click handler
 
+### Player Rankings (Planned - Next Priority)
+**Status:** Planned
+
+Universal player rankings within each league using z-score based evaluation of all NBA players.
+
+**Core Concept:**
+- League-specific player rankings for ALL NBA players (~450+ players)
+- Z-score based using the league's actual scoring categories
+- Combines rostered players AND free agents into unified ranking
+- Uses league-wide NBA averages (not just rostered players) for fairer comparison
+
+**Data Source:**
+- All NBA players (rostered + free agents combined)
+- League-wide mean/std calculated from entire player pool
+- Only includes players with ≥5 games played
+- Uses standard deviation across ALL NBA players for accurate relative rankings
+
+**Features:**
+- **Sortable Table:** Click any column to sort
+  - First click: Descending (best to worst)
+  - Second click: Ascending (worst to best)
+  - Default: Total z-score descending
+- **Position Filter:** Dropdown (All, PG, SG, SF, PF, C)
+- **Search Bar:** Filter by player name or NBA team
+- **Player Detail Modal:** Click any player for expanded stats
+- **Color-Coded Z-Scores:**
+  - Green: z > 1.0 (excellent)
+  - Black: 0 < z < 1.0 (above average)
+  - Gray: -1.0 < z < 0 (below average)
+  - Red: z < -1.0 (poor)
+- **Injury Status Indicators:** Visual badges for DTD, O, IR
+
+**Performance:**
+- 24-hour cache to avoid recalculating on every load
+- Cache key: `player_rankings_{league_id}`
+- Background refresh available for future optimization
+- Client-side filtering/sorting for responsiveness
+
+**Technical Implementation:**
+
+Backend Endpoint:
+```
+GET /api/leagues/{id}/player-rankings
+```
+
+Returns:
+- All players with total z-score and per-category z-scores
+- Per-game stats for each player
+- League-wide mean/std for each category
+- Cache expiration timestamp
+
+Calculation Logic:
+1. Fetch all rostered players from all teams
+2. Fetch all free agents from ESPN
+3. Combine into single player list
+4. Filter to players with ≥5 games played
+5. Calculate league-wide mean/std for each scoring category
+6. Compute z-scores: `(player_stat - mean) / std_dev`
+7. Sum category z-scores for total z-score
+8. Cache results with 24-hour TTL
+
+Frontend Component:
+```
+frontend/src/components/PlayerRankings.js
+```
+- New tab in league dashboard alongside Trade Opportunities, Waiver Targets
+- Sortable table with dynamic filtering
+- Player detail modal on click
+
+**Key Files (To Be Created):**
+- `backend/api/player_rankings.py` - API endpoint
+- `backend/analysis/player_ranker.py` - Ranking calculation logic
+- `frontend/src/components/PlayerRankings.js` - Main component
+- `frontend/src/components/PlayerRankingsTable.js` - Sortable table
+- `frontend/src/components/ZScoreCell.js` - Color-coded z-score display
+
+**Use Cases:**
+- Identify undervalued players on waivers
+- Compare players across all categories at once
+- Find category specialists (high z-score in one category)
+- Draft preparation and player evaluation
+- Quick lookup of any player's league-specific value
+
+**Why This Matters:**
+- More comprehensive than ESPN's built-in player rater
+- Tailored to YOUR league's specific scoring categories
+- Z-scores capture relative value (not absolute stats)
+- Category specialists easy to spot
+- Unified view of all NBA players, not just free agents
+
+**Design Decisions:**
+- Uses ALL NBA players for average calculation (fairer than just rostered)
+- League-specific (each league has different categories/z-scores)
+- 24-hour cache balances freshness with performance
+- Client-side filtering avoids repeated API calls
+
 ---
 
 ## Database Schema (Key Tables)
@@ -988,11 +1084,12 @@ npm run build
 - Dynamic roster limits working (excludes IR slots)
 
 **Next Steps:**
-1. H2H matchup analysis improvements
-2. Historical Performance Tracking
-3. Mobile responsive design refinements
-4. ML model training and integration
-5. Email notifications (future)
+1. **Player Rankings (Next Priority)** - Universal z-score based player rankings
+2. H2H matchup analysis improvements
+3. Historical Performance Tracking
+4. Mobile responsive design refinements
+5. ML model training and integration
+6. Email notifications (future)
 
 ---
 
@@ -1008,5 +1105,5 @@ npm run build
 
 ---
 
-**Last Updated:** March 2, 2026
-**Version:** 1.6 (Multi-Player Trades, Waiver Analyzer, Dynamic Roster Limits)
+**Last Updated:** March 14, 2026
+**Version:** 1.7 (Added Player Rankings documentation as next priority)
