@@ -123,16 +123,19 @@ def get_player_rankings(league_id):
         for idx, player in enumerate(ranked_players, 1):
             player['rank'] = idx
 
+        # Format league_averages for response (exclude fga_mean/fta_mean scalars)
+        formatted_averages = {}
+        for k, v in league_averages.items():
+            if isinstance(v, dict) and 'mean' in v and 'std' in v:
+                formatted_averages[k] = {'mean': round(v['mean'], 3), 'std': round(v['std'], 3)}
+
         response = {
             'players': ranked_players,
             'categories': categories,
             'total_players': len(ranked_players),
             'cached_at': datetime.now().isoformat(),
             'cache_expires_at': (datetime.now() + CACHE_DURATION).isoformat(),
-            'league_averages': {
-                k: {'mean': round(v['mean'], 3), 'std': round(v['std'], 3)}
-                for k, v in league_averages.items()
-            }
+            'league_averages': formatted_averages
         }
 
         # Cache the results
@@ -213,45 +216,134 @@ def calculate_league_wide_averages(players, categories):
     Calculate mean and standard deviation for each category
     across all NBA players (league-wide, not just rostered).
 
+    FG% and FT% use contribution-based calculation (ESPN method):
+    Contribution = actual makes - expected makes (based on league avg %)
+
     Args:
         players: List of player dictionaries with per_game_stats
         categories: List of category names (e.g., ['PTS', 'REB', 'AST', ...])
 
     Returns:
         Dictionary mapping stat_key to {'mean': float, 'std': float}
+        FG%/FT% also include 'baseline_pct' for contribution calculation
     """
     league_averages = {}
 
+    # Step 1: Calculate league-wide baseline percentages
+    all_fgm = []
+    all_fga = []
+    all_ftm = []
+    all_fta = []
+
+    for p in players:
+        stats = p.get('per_game_stats', {})
+        if stats:
+            fgm = stats.get('fgm')
+            fga = stats.get('fga')
+            ftm = stats.get('ftm')
+            fta = stats.get('fta')
+
+            if fgm is not None and fga is not None:
+                all_fgm.append(fgm)
+                all_fga.append(fga)
+            if ftm is not None and fta is not None:
+                all_ftm.append(ftm)
+                all_fta.append(fta)
+
+    # Calculate league average percentages (total makes / total attempts)
+    total_fgm = sum(all_fgm)
+    total_fga = sum(all_fga)
+    total_ftm = sum(all_ftm)
+    total_fta = sum(all_fta)
+
+    league_avg_fg_pct = total_fgm / total_fga if total_fga > 0 else 0
+    league_avg_ft_pct = total_ftm / total_fta if total_fta > 0 else 0
+
+    logger.info(f'League baseline FG%: {league_avg_fg_pct:.3f} ({total_fgm:.1f} / {total_fga:.1f})')
+    logger.info(f'League baseline FT%: {league_avg_ft_pct:.3f} ({total_ftm:.1f} / {total_fta:.1f})')
+
+    # Step 2: Calculate contribution for each category
     for cat in categories:
         stat_key = map_category_to_stat(cat)
 
-        # Collect all player values for this stat
-        values = []
-        for p in players:
-            per_game_stats = p.get('per_game_stats', {})
-            value = per_game_stats.get(stat_key)
+        # FG% contribution (makes above/below expected)
+        if stat_key == 'fg_pct':
+            contributions = []
+            for p in players:
+                stats = p.get('per_game_stats', {})
+                fgm = stats.get('fgm', 0) or 0
+                fga = stats.get('fga', 0) or 0
 
-            # For percentage stats, scale from decimal to percentage
-            if stat_key in ['fg_pct', 'ft_pct'] and value is not None:
-                value = value * 100  # 0.476 -> 47.6
+                if fga > 0:
+                    # Contribution = actual makes - expected makes
+                    expected_fgm = fga * league_avg_fg_pct
+                    contribution = fgm - expected_fgm
+                    contributions.append(contribution)
 
-            if value is not None and not np.isnan(value):
-                values.append(value)
+            if contributions:
+                mean_val = float(np.mean(contributions))
+                std_val = float(np.std(contributions))
+                if std_val == 0:
+                    std_val = 0.01
+                league_averages['fg_pct'] = {
+                    'mean': mean_val,
+                    'std': std_val,
+                    'baseline_pct': league_avg_fg_pct
+                }
+                logger.info(f'FG% (contribution): mean={mean_val:.3f}, std={std_val:.3f}')
+            else:
+                league_averages['fg_pct'] = {'mean': 0.0, 'std': 1.0, 'baseline_pct': 0.0}
 
-        if values:
-            mean_val = float(np.mean(values))
-            std_val = float(np.std(values))
-            # Ensure std is never 0 to avoid division errors
-            if std_val == 0:
-                std_val = 1.0
-            league_averages[stat_key] = {
-                'mean': mean_val,
-                'std': std_val
-            }
-            logger.debug(f'{cat} ({stat_key}): mean={mean_val:.2f}, std={std_val:.2f}, n={len(values)}')
+        # FT% contribution (makes above/below expected)
+        elif stat_key == 'ft_pct':
+            contributions = []
+            for p in players:
+                stats = p.get('per_game_stats', {})
+                ftm = stats.get('ftm', 0) or 0
+                fta = stats.get('fta', 0) or 0
+
+                if fta > 0:
+                    expected_ftm = fta * league_avg_ft_pct
+                    contribution = ftm - expected_ftm
+                    contributions.append(contribution)
+
+            if contributions:
+                mean_val = float(np.mean(contributions))
+                std_val = float(np.std(contributions))
+                if std_val == 0:
+                    std_val = 0.01
+                league_averages['ft_pct'] = {
+                    'mean': mean_val,
+                    'std': std_val,
+                    'baseline_pct': league_avg_ft_pct
+                }
+                logger.info(f'FT% (contribution): mean={mean_val:.3f}, std={std_val:.3f}')
+            else:
+                league_averages['ft_pct'] = {'mean': 0.0, 'std': 1.0, 'baseline_pct': 0.0}
+
+        # Regular counting stats (PTS, REB, AST, STL, BLK, 3PM, TO)
         else:
-            league_averages[stat_key] = {'mean': 0.0, 'std': 1.0}
-            logger.warning(f'No values found for {cat} ({stat_key}), using defaults')
+            values = []
+            for p in players:
+                per_game_stats = p.get('per_game_stats', {})
+                value = per_game_stats.get(stat_key)
+
+                if value is not None and not np.isnan(value):
+                    values.append(value)
+
+            if values:
+                mean_val = float(np.mean(values))
+                std_val = float(np.std(values))
+                if std_val == 0:
+                    std_val = 0.01
+                league_averages[stat_key] = {
+                    'mean': mean_val,
+                    'std': std_val
+                }
+                logger.debug(f'{cat} ({stat_key}): mean={mean_val:.2f}, std={std_val:.2f}, n={len(values)}')
+            else:
+                league_averages[stat_key] = {'mean': 0.0, 'std': 1.0}
+                logger.warning(f'No values found for {cat} ({stat_key}), using defaults')
 
     return league_averages
 
@@ -260,10 +352,14 @@ def calculate_player_zscores(players, categories, league_averages):
     """
     Calculate z-scores for each player in each category.
 
+    FG% and FT% use contribution-based z-scores (ESPN method):
+    Contribution = actual makes - expected makes (based on league avg %)
+
     Args:
         players: List of player dictionaries
         categories: List of category names
         league_averages: Dictionary from calculate_league_wide_averages
+                        (includes baseline_pct for contribution calculation)
 
     Returns:
         List of player dictionaries with z-score data added
@@ -282,20 +378,50 @@ def calculate_player_zscores(players, categories, league_averages):
 
         for cat in categories:
             stat_key = map_category_to_stat(cat)
-            player_value = per_game_stats.get(stat_key, 0) or 0
 
-            # For percentage stats, scale from decimal to percentage
-            if stat_key in ['fg_pct', 'ft_pct']:
-                player_value = player_value * 100
+            # FG% contribution z-score
+            if stat_key == 'fg_pct':
+                fgm = per_game_stats.get('fgm', 0) or 0
+                fga = per_game_stats.get('fga', 0) or 0
+                baseline_fg_pct = league_averages.get('fg_pct', {}).get('baseline_pct', 0)
 
-            avg_data = league_averages.get(stat_key, {'mean': 0, 'std': 1})
-            avg = avg_data['mean']
-            std = avg_data['std']
+                if fga > 0 and baseline_fg_pct > 0:
+                    # Calculate contribution (makes above/below expected)
+                    expected_fgm = fga * baseline_fg_pct
+                    player_contribution = fgm - expected_fgm
+                else:
+                    player_contribution = 0
 
-            if std > 0:
-                z_score = (player_value - avg) / std
+                avg_data = league_averages.get('fg_pct', {'mean': 0, 'std': 1})
+                avg = avg_data['mean']
+                std = avg_data['std']
+                z_score = (player_contribution - avg) / std if std > 0 else 0
+
+            # FT% contribution z-score
+            elif stat_key == 'ft_pct':
+                ftm = per_game_stats.get('ftm', 0) or 0
+                fta = per_game_stats.get('fta', 0) or 0
+                baseline_ft_pct = league_averages.get('ft_pct', {}).get('baseline_pct', 0)
+
+                if fta > 0 and baseline_ft_pct > 0:
+                    expected_ftm = fta * baseline_ft_pct
+                    player_contribution = ftm - expected_ftm
+                else:
+                    player_contribution = 0
+
+                avg_data = league_averages.get('ft_pct', {'mean': 0, 'std': 1})
+                avg = avg_data['mean']
+                std = avg_data['std']
+                z_score = (player_contribution - avg) / std if std > 0 else 0
+
+            # Regular counting stats
             else:
-                z_score = 0
+                player_value = per_game_stats.get(stat_key, 0) or 0
+
+                avg_data = league_averages.get(stat_key, {'mean': 0, 'std': 1})
+                avg = avg_data['mean']
+                std = avg_data['std']
+                z_score = (player_value - avg) / std if std > 0 else 0
 
             # For turnovers, flip the sign (lower is better)
             if cat == 'TO':

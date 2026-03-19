@@ -1737,6 +1737,9 @@ class StartLimitOptimizer:
         Collects per-game stats from all rostered players across all teams
         and calculates mean and standard deviation for each category.
 
+        FG% and FT% use contribution-based calculation (ESPN method):
+        Contribution = actual makes - expected makes (based on league avg %)
+
         Args:
             all_rosters: List of team rosters, each roster is a list of player dicts
                          Each player dict should have 'per_game_stats' key
@@ -1745,12 +1748,11 @@ class StartLimitOptimizer:
 
         Returns:
             Dict mapping stat_key -> {'mean': float, 'std': float}
-            Example: {'pts': {'mean': 15.0, 'std': 5.0}, 'reb': {'mean': 5.0, 'std': 2.0}, ...}
+            FG%/FT% also include 'baseline_pct' for contribution calculation
         """
         import statistics
 
         # Map category names to stat keys
-        # Handles both uppercase (from categories) and lowercase (from stats)
         CATEGORY_TO_STAT_KEY = {
             'PTS': 'pts', 'pts': 'pts',
             'REB': 'reb', 'reb': 'reb',
@@ -1763,6 +1765,31 @@ class StartLimitOptimizer:
             'FT%': 'ft_pct', 'ft_pct': 'ft_pct',
         }
 
+        # Map stat keys to possible alternate keys in per_game_stats
+        STAT_KEY_ALTERNATES = {
+            'fg_pct': ['fg_pct', 'FG%', 'FG_PCT', 'fgPct'],
+            'ft_pct': ['ft_pct', 'FT%', 'FT_PCT', 'ftPct'],
+            'fgm': ['fgm', 'FGM'],
+            'fga': ['fga', 'FGA'],
+            'ftm': ['ftm', 'FTM'],
+            'fta': ['fta', 'FTA'],
+            'pts': ['pts', 'PTS'],
+            'reb': ['reb', 'REB'],
+            'ast': ['ast', 'AST'],
+            'stl': ['stl', 'STL'],
+            'blk': ['blk', 'BLK'],
+            '3pm': ['3pm', '3PM', 'threePointMade'],
+            'to': ['to', 'TO', 'turnovers'],
+        }
+
+        def get_stat_value(per_game_stats, stat_key):
+            """Get stat value trying multiple key variations."""
+            alternate_keys = STAT_KEY_ALTERNATES.get(stat_key, [stat_key, stat_key.upper()])
+            for alt_key in alternate_keys:
+                if alt_key in per_game_stats and per_game_stats[alt_key] is not None:
+                    return per_game_stats[alt_key]
+            return None
+
         # Determine which stat keys to calculate averages for
         if categories:
             stat_keys = set()
@@ -1772,15 +1799,16 @@ class StartLimitOptimizer:
                 if stat_key:
                     stat_keys.add(stat_key)
         else:
-            # Default categories for Roto
             stat_keys = {'pts', 'reb', 'ast', 'stl', 'blk', '3pm', 'to', 'fg_pct', 'ft_pct'}
 
-        # Collect all player stats
-        stat_values: Dict[str, List[float]] = {key: [] for key in stat_keys}
-
+        # First pass: collect FGM/FGA/FTM/FTA for baseline percentage calculation
+        all_fgm = []
+        all_fga = []
+        all_ftm = []
+        all_fta = []
         player_count = 0
         sample_logged = 0
-        logged_pct_conversions = set()  # Track which percentage stats we've logged
+
         for roster in all_rosters:
             for player in roster:
                 per_game_stats = player.get('per_game_stats', {})
@@ -1790,80 +1818,147 @@ class StartLimitOptimizer:
                 player_count += 1
                 player_name = player.get('name', 'Unknown')
 
-                # Log first 3 players' per-game stats to verify data is correct
+                # Log first 3 players for debugging
                 if sample_logged < 3:
-                    pts = per_game_stats.get('pts', per_game_stats.get('PTS', 0))
-                    reb = per_game_stats.get('reb', per_game_stats.get('REB', 0))
-                    ast = per_game_stats.get('ast', per_game_stats.get('AST', 0))
+                    pts = get_stat_value(per_game_stats, 'pts') or 0
+                    reb = get_stat_value(per_game_stats, 'reb') or 0
+                    ast = get_stat_value(per_game_stats, 'ast') or 0
                     self._log(f"[SAMPLE DATA] {player_name}: pts={pts:.1f}, reb={reb:.1f}, ast={ast:.1f}/game")
                     sample_logged += 1
 
-                # Map stat keys to possible alternate keys in per_game_stats
-                STAT_KEY_ALTERNATES = {
-                    'fg_pct': ['fg_pct', 'FG%', 'FG_PCT', 'fgPct'],
-                    'ft_pct': ['ft_pct', 'FT%', 'FT_PCT', 'ftPct'],
-                    '3p_pct': ['3p_pct', '3P%', '3P_PCT', '3pPct'],
-                    'pts': ['pts', 'PTS'],
-                    'reb': ['reb', 'REB'],
-                    'ast': ['ast', 'AST'],
-                    'stl': ['stl', 'STL'],
-                    'blk': ['blk', 'BLK'],
-                    '3pm': ['3pm', '3PM', 'threePointMade'],
-                    'to': ['to', 'TO', 'turnovers'],
-                }
+                    if sample_logged == 1:
+                        self._log(f"[DEBUG] per_game_stats keys: {list(per_game_stats.keys())}")
 
-                # Log keys from first player for debugging
-                if sample_logged == 1:
-                    self._log(f"[DEBUG] per_game_stats keys: {list(per_game_stats.keys())}")
+                # Collect FGM/FGA/FTM/FTA for baseline percentage
+                fgm = get_stat_value(per_game_stats, 'fgm')
+                fga = get_stat_value(per_game_stats, 'fga')
+                ftm = get_stat_value(per_game_stats, 'ftm')
+                fta = get_stat_value(per_game_stats, 'fta')
 
-                for stat_key in stat_keys:
-                    # Try multiple key variations to find the value
-                    value = None
-                    alternate_keys = STAT_KEY_ALTERNATES.get(stat_key, [stat_key, stat_key.upper()])
-                    for alt_key in alternate_keys:
-                        if alt_key in per_game_stats and per_game_stats[alt_key] is not None:
-                            value = per_game_stats[alt_key]
-                            break
+                if fgm is not None and fga is not None:
+                    all_fgm.append(float(fgm))
+                    all_fga.append(float(fga))
+                if ftm is not None and fta is not None:
+                    all_ftm.append(float(ftm))
+                    all_fta.append(float(fta))
 
-                    if value is not None and value != 0:
-                        # Scale percentage stats (0.476 -> 47.6) so they're comparable to counting stats
-                        if stat_key in ['fg_pct', 'ft_pct', '3p_pct'] and value < 1.0 and value > 0:
-                            original_value = value
-                            value = value * 100
-                            # Log first percentage conversion for each stat
-                            if sample_logged <= 3 and stat_key not in logged_pct_conversions:
-                                self._log(f"[PCT SCALE] {stat_key}: {original_value:.4f} -> {value:.1f}")
-                                logged_pct_conversions.add(stat_key)
-                        stat_values[stat_key].append(float(value))
+        # Calculate league baseline percentages (total makes / total attempts)
+        total_fgm = sum(all_fgm)
+        total_fga = sum(all_fga)
+        total_ftm = sum(all_ftm)
+        total_fta = sum(all_fta)
 
-        # Calculate mean and std for each category
-        league_averages = {}
+        league_avg_fg_pct = total_fgm / total_fga if total_fga > 0 else 0
+        league_avg_ft_pct = total_ftm / total_fta if total_fta > 0 else 0
 
         self._log(f"\n{'='*60}")
         self._log("LEAGUE-WIDE ROS PER-GAME AVERAGES (Z-Score Baseline)")
         self._log(f"{'='*60}")
         self._log(f"Players analyzed: {player_count}")
+        self._log(f"League baseline FG%: {league_avg_fg_pct:.3f} ({total_fgm:.1f} / {total_fga:.1f})")
+        self._log(f"League baseline FT%: {league_avg_ft_pct:.3f} ({total_ftm:.1f} / {total_fta:.1f})")
 
+        league_averages = {}
+
+        # Second pass: calculate averages for each category
         for stat_key in sorted(stat_keys):
-            values = stat_values[stat_key]
+            # FG% contribution (makes above/below expected)
+            if stat_key == 'fg_pct':
+                contributions = []
+                for roster in all_rosters:
+                    for player in roster:
+                        per_game_stats = player.get('per_game_stats', {})
+                        if not per_game_stats:
+                            continue
 
-            if len(values) >= 2:
-                mean = statistics.mean(values)
-                std = statistics.stdev(values)
-            elif len(values) == 1:
-                mean = values[0]
-                std = 0.01  # Avoid division by zero
+                        fgm = get_stat_value(per_game_stats, 'fgm') or 0
+                        fga = get_stat_value(per_game_stats, 'fga') or 0
+
+                        if fga > 0:
+                            # Contribution = actual makes - expected makes
+                            expected_fgm = fga * league_avg_fg_pct
+                            contribution = fgm - expected_fgm
+                            contributions.append(contribution)
+
+                if len(contributions) >= 2:
+                    mean = statistics.mean(contributions)
+                    std = statistics.stdev(contributions)
+                else:
+                    mean = 0.0
+                    std = 0.01
+
+                if std == 0:
+                    std = 0.01
+
+                league_averages['fg_pct'] = {
+                    'mean': mean,
+                    'std': std,
+                    'baseline_pct': league_avg_fg_pct
+                }
+                self._log(f"  FG_PCT (contribution): mean={mean:6.3f}, std={std:5.3f} (n={len(contributions)})")
+
+            # FT% contribution (makes above/below expected)
+            elif stat_key == 'ft_pct':
+                contributions = []
+                for roster in all_rosters:
+                    for player in roster:
+                        per_game_stats = player.get('per_game_stats', {})
+                        if not per_game_stats:
+                            continue
+
+                        ftm = get_stat_value(per_game_stats, 'ftm') or 0
+                        fta = get_stat_value(per_game_stats, 'fta') or 0
+
+                        if fta > 0:
+                            expected_ftm = fta * league_avg_ft_pct
+                            contribution = ftm - expected_ftm
+                            contributions.append(contribution)
+
+                if len(contributions) >= 2:
+                    mean = statistics.mean(contributions)
+                    std = statistics.stdev(contributions)
+                else:
+                    mean = 0.0
+                    std = 0.01
+
+                if std == 0:
+                    std = 0.01
+
+                league_averages['ft_pct'] = {
+                    'mean': mean,
+                    'std': std,
+                    'baseline_pct': league_avg_ft_pct
+                }
+                self._log(f"  FT_PCT (contribution): mean={mean:6.3f}, std={std:5.3f} (n={len(contributions)})")
+
+            # Regular counting stats
             else:
-                # No data - use reasonable defaults
-                mean = 0.0
-                std = 0.01
+                values = []
+                for roster in all_rosters:
+                    for player in roster:
+                        per_game_stats = player.get('per_game_stats', {})
+                        if not per_game_stats:
+                            continue
 
-            # Ensure std is never zero to avoid division errors
-            if std == 0:
-                std = 0.01
+                        value = get_stat_value(per_game_stats, stat_key)
+                        if value is not None and value != 0:
+                            values.append(float(value))
 
-            league_averages[stat_key] = {'mean': mean, 'std': std}
-            self._log(f"  {stat_key.upper():6s}: mean={mean:6.2f}, std={std:5.2f} (n={len(values)})")
+                if len(values) >= 2:
+                    mean = statistics.mean(values)
+                    std = statistics.stdev(values)
+                elif len(values) == 1:
+                    mean = values[0]
+                    std = 0.01
+                else:
+                    mean = 0.0
+                    std = 0.01
+
+                if std == 0:
+                    std = 0.01
+
+                league_averages[stat_key] = {'mean': mean, 'std': std}
+                self._log(f"  {stat_key.upper():6s}: mean={mean:6.2f}, std={std:5.2f} (n={len(values)})")
 
         self._log(f"{'='*60}\n")
 
@@ -1896,10 +1991,14 @@ class StartLimitOptimizer:
         calculates value as the sum of z-scores: (player_stat - mean) / std.
         This creates fair, league-specific values that account for category scarcity.
 
+        FG% and FT% use contribution-based calculation (ESPN method):
+        Contribution = actual makes - expected makes (based on league avg %)
+
         Args:
             per_game_stats: Player's per-game projected stats
             league_averages: Dict of stat_key -> {'mean': float, 'std': float}
                             If None, uses cached self._league_averages
+                            FG%/FT% also include 'baseline_pct' for contribution calculation
             log_details: If True, log individual z-scores (useful for debugging)
             player_name: Player name for logging (optional)
 
@@ -1926,7 +2025,10 @@ class StartLimitOptimizer:
         STAT_KEY_ALTERNATES = {
             'fg_pct': ['fg_pct', 'FG%', 'FG_PCT', 'fgPct'],
             'ft_pct': ['ft_pct', 'FT%', 'FT_PCT', 'ftPct'],
-            '3p_pct': ['3p_pct', '3P%', '3P_PCT', '3pPct'],
+            'fgm': ['fgm', 'FGM'],
+            'fga': ['fga', 'FGA'],
+            'ftm': ['ftm', 'FTM'],
+            'fta': ['fta', 'FTA'],
             'pts': ['pts', 'PTS'],
             'reb': ['reb', 'REB'],
             'ast': ['ast', 'AST'],
@@ -1936,37 +2038,65 @@ class StartLimitOptimizer:
             'to': ['to', 'TO', 'turnovers'],
         }
 
+        def get_stat_value(stat_key):
+            """Get stat value trying multiple key variations."""
+            alternate_keys = STAT_KEY_ALTERNATES.get(stat_key, [stat_key, stat_key.upper()])
+            for alt_key in alternate_keys:
+                if alt_key in per_game_stats and per_game_stats[alt_key] is not None:
+                    return per_game_stats[alt_key]
+            return None
+
         # Log keys on first player for debugging
         if log_details and player_name:
             self._log(f"  {player_name} per_game_stats keys: {list(per_game_stats.keys())}")
 
         for stat_key, avg_data in averages.items():
+            # Skip if not a proper stat entry (must have mean/std)
+            if not isinstance(avg_data, dict) or 'mean' not in avg_data:
+                continue
+
             mean = avg_data['mean']
             std = avg_data['std']
 
-            # Try multiple key variations to find the value
-            player_stat = None
-            alternate_keys = STAT_KEY_ALTERNATES.get(stat_key, [stat_key, stat_key.upper()])
-            for alt_key in alternate_keys:
-                if alt_key in per_game_stats:
-                    player_stat = per_game_stats[alt_key]
-                    break
+            # FG% contribution (makes above/below expected)
+            if stat_key == 'fg_pct':
+                fgm = get_stat_value('fgm') or 0
+                fga = get_stat_value('fga') or 0
+                baseline_fg_pct = avg_data.get('baseline_pct', 0)
 
-            if player_stat is None:
-                player_stat = 0
+                if fga > 0 and baseline_fg_pct > 0:
+                    # Calculate contribution (makes above/below expected)
+                    expected_fgm = fga * baseline_fg_pct
+                    player_contribution = fgm - expected_fgm
+                else:
+                    player_contribution = 0
 
-            # Scale percentage stats (0.476 -> 47.6) to match league averages scale
-            if stat_key in ['fg_pct', 'ft_pct', '3p_pct'] and player_stat is not None and player_stat < 1.0 and player_stat > 0:
-                original_stat = player_stat
-                player_stat = player_stat * 100
+                z_score = (player_contribution - mean) / std if std > 0 else 0.0
+
                 if log_details:
-                    self._log(f"    [PCT] {stat_key}: {original_stat:.4f} -> {player_stat:.1f} (mean={mean:.1f}, std={std:.2f})")
+                    self._log(f"    [FG%] {fgm:.1f}FGM - {fga:.1f}FGA * {baseline_fg_pct:.3f} = {player_contribution:+.2f} contribution (mean={mean:.3f})")
 
-            # Calculate z-score
-            if std > 0:
-                z_score = (player_stat - mean) / std
+            # FT% contribution (makes above/below expected)
+            elif stat_key == 'ft_pct':
+                ftm = get_stat_value('ftm') or 0
+                fta = get_stat_value('fta') or 0
+                baseline_ft_pct = avg_data.get('baseline_pct', 0)
+
+                if fta > 0 and baseline_ft_pct > 0:
+                    expected_ftm = fta * baseline_ft_pct
+                    player_contribution = ftm - expected_ftm
+                else:
+                    player_contribution = 0
+
+                z_score = (player_contribution - mean) / std if std > 0 else 0.0
+
+                if log_details:
+                    self._log(f"    [FT%] {ftm:.1f}FTM - {fta:.1f}FTA * {baseline_ft_pct:.3f} = {player_contribution:+.2f} contribution (mean={mean:.3f})")
+
+            # Regular counting stats
             else:
-                z_score = 0.0
+                player_stat = get_stat_value(stat_key) or 0
+                z_score = (player_stat - mean) / std if std > 0 else 0.0
 
             # For turnovers, flip the sign (lower is better)
             if stat_key == 'to':

@@ -431,9 +431,29 @@ per_game_value = Σ z_scores across all categories
 **Category Handling:**
 - **Counting Stats (PTS, REB, AST, STL, BLK, 3PM):** Higher values = positive z-score
 - **Turnovers (TO):** Sign is flipped (lower TO = positive z-score)
-- **Percentage Stats (FG%, FT%):** Multiplied by 100 before z-score calculation
-  - Converts 0.476 → 47.6 to match scale of counting stats
-  - Ensures fair weighting between percentages and counting stats
+- **Percentage Stats (FG%, FT%):** Uses ESPN-style contribution-based z-scores
+  - Measures makes above/below expected based on volume
+  - Formula: `contribution = makes - (attempts × league_avg_pct)`
+  - High volume + good efficiency = positive z-score (rewarded)
+  - High volume + bad efficiency = negative z-score (penalized)
+  - Low volume = muted impact either way (less risk/reward)
+
+**Contribution-Based Z-Score Example (FG%):**
+```
+League Baseline: 45% FG (total_fgm / total_fga across all players)
+
+Player A: 8 FGM on 16 FGA (50% FG)
+  Expected FGM = 16 × 0.45 = 7.2
+  Contribution = 8 - 7.2 = +0.8 (positive: made more than expected)
+
+Player B: 4 FGM on 8 FGA (50% FG, same percentage but half volume)
+  Expected FGM = 8 × 0.45 = 3.6
+  Contribution = 4 - 3.6 = +0.4 (positive but smaller due to lower volume)
+
+Player C: 6 FGM on 15 FGA (40% FG, high volume bad shooter)
+  Expected FGM = 15 × 0.45 = 6.75
+  Contribution = 6 - 6.75 = -0.75 (negative: hurts team by missing shots)
+```
 
 **Example Z-Score Calculation:**
 ```
@@ -443,6 +463,7 @@ LeBron James: 25.5 PTS, 7.2 REB, 8.1 AST
   PTS z-score: (25.5 - 15.2) / 6.5 = +1.58
   REB z-score: (7.2 - 5.8) / 2.3 = +0.61
   AST z-score: (8.1 - 3.4) / 2.1 = +2.24
+  FG% z-score: (contribution - mean) / std = +0.85 (high volume efficient)
   ... (repeat for all 8-9 categories)
   Total z-value: +8.5/game (elite player)
 
@@ -450,6 +471,7 @@ Buddy Hield: 12.8 PTS, 3.2 REB, 2.1 AST
   PTS z-score: (12.8 - 15.2) / 6.5 = -0.37
   REB z-score: (3.2 - 5.8) / 2.3 = -1.13
   AST z-score: (2.1 - 3.4) / 2.1 = -0.62
+  FG% z-score: contribution-based = -0.42 (moderate volume shooter)
   ... (repeat for all categories)
   Total z-value: -0.82/game (below average)
 ```
@@ -459,6 +481,7 @@ Buddy Hield: 12.8 PTS, 3.2 REB, 2.1 AST
 - **Category Scarcity:** Naturally weights scarce categories higher (smaller std = bigger z-score impact)
 - **Fair Comparison:** 25 PTS and 2.5 BLK can be compared on the same scale
 - **No Manual Tuning:** Replaces arbitrary hardcoded category weights
+- **Volume-Aware Percentages:** Contribution-based FG%/FT% rewards high-volume efficient shooters and penalizes high-volume poor shooters appropriately
 
 **Day-by-Day Simulation Approach:**
 
@@ -782,33 +805,55 @@ All waiver suggestions automatically filter out unavailable players:
 - Display preferences (dark mode, compact view, etc.)
 - Multiple league management
 
-### 3.8 Player Rankings
+### 3.8 Player Rankings (Complete)
 
 A comprehensive player ranking system that evaluates all NBA players using league-specific z-scores, enabling users to identify undervalued players, compare across categories, and make informed roster decisions.
+
+**Status:** Fully implemented (March 2026)
 
 **3.8.1 Overview**
 - League-specific player rankings for all NBA players
 - Z-score based ranking using the league's scoring categories
 - Shows total z-score and per-category z-scores
 - Combines rostered players and free agents into a unified ranking
+- "FA" badge distinguishes free agents from rostered players
 
 **3.8.2 Data Source**
-- **Player Pool:** All NBA players (rostered + free agents combined, ~450+ players)
-- **League-Wide Averages:** Z-score calculation uses mean/std from ALL NBA players, not just rostered players
+- **Player Pool:** All NBA players (rostered + free agents combined, ~400+ players)
+- **League-Wide Averages:** Z-score calculation uses mean/std from ALL NBA players
 - **Fair Comparison:** Standard deviation across entire NBA player pool ensures accurate relative rankings
-- **Minimum Games:** Only players with ≥5 games played are included (filters out injured/inactive players)
+- **Minimum Games:** Players with ≥1 game played are included (maximizes player coverage)
 
-**3.8.3 Z-Score Calculation**
+**3.8.3 Z-Score Calculation (ESPN-Style Contribution Method)**
 
-For each scoring category in the league:
+**Counting Stats:** Standard z-score formula
 ```
-z_score = (player_stat - league_wide_mean) / league_wide_std_dev
+z_score = (player_stat - league_mean) / league_std_dev
 ```
+
+**Percentage Stats (FG%, FT%):** Contribution-based z-scores
+```python
+# Calculate league baseline percentage
+league_avg_fg_pct = total_fgm / total_fga  # e.g., 0.462
+
+# Player contribution = makes above/below expected
+expected_fgm = player_fga * league_avg_fg_pct
+contribution = player_fgm - expected_fgm
+
+# Z-score from contribution
+z_score = (contribution - mean_contribution) / std_contribution
+```
+
+**Why Contribution-Based?**
+- High volume + good efficiency = big positive z-score (rewarded)
+- High volume + bad efficiency = big negative z-score (penalized)
+- Low volume = muted impact either way
+- Matches ESPN Player Rater and Basketball Monster methodology
 
 **Category Handling:**
 - **Counting Stats (PTS, REB, AST, STL, BLK, 3PM):** Higher values = positive z-score
 - **Turnovers (TO):** Sign flipped (lower TO = positive z-score)
-- **Percentage Stats (FG%, FT%):** Multiplied by 100 before calculation (0.476 → 47.6)
+- **Percentage Stats (FG%, FT%):** Contribution-based calculation (volume-aware)
 
 **Total Z-Score:**
 ```
@@ -914,11 +959,12 @@ GET /api/leagues/{id}/player-rankings
 1. Fetch all rostered players from all teams in league
 2. Fetch all free agents from ESPN
 3. Combine into single player list
-4. Filter to players with ≥5 games played
-5. Calculate league-wide mean and std for each category
-6. Compute z-scores for each player in each category
-7. Sum category z-scores for total z-score
-8. Cache results with 24-hour TTL
+4. Filter to players with ≥1 game played
+5. Calculate league baseline percentages (total FGM/FGA, FTM/FTA)
+6. Calculate contribution-based z-scores for FG% and FT%
+7. Calculate standard z-scores for counting stats
+8. Sum category z-scores for total z-score
+9. Cache results with 24-hour TTL
 
 **3.8.7 Frontend Implementation**
 
@@ -1912,32 +1958,40 @@ The primary projection approach uses the tiered weighting system documented in S
 
 ## 18. Conclusion
 
-The Fantasy Basketball Optimizer is a comprehensive web application that combines data science, machine learning, and web development to provide actionable insights for fantasy basketball managers. By integrating with ESPN Fantasy Basketball and leveraging external data sources, the app delivers accurate projections, intelligent trade recommendations, and optimized waiver wire suggestions.
-
-The project is structured for iterative development with clear phases, allowing for incremental feature delivery and continuous testing. With a focus on user experience, performance, and accuracy, this app has the potential to become an essential tool for serious fantasy basketball players.
+The Fantasy Basketball Optimizer is a comprehensive web application that combines data science and web development to provide actionable insights for fantasy basketball managers. By integrating with ESPN Fantasy Basketball and leveraging z-score based analysis, the app delivers accurate projections, intelligent trade recommendations, and optimized waiver wire suggestions.
 
 **Current State (March 2026):**
-- Trade analyzer fully functional with multi-player support (2-for-1, 3-for-2, etc.)
-- Automatic roster management with smart drops (lowest z-score first)
-- Dynamic roster limit fetching from ESPN (excludes IR slots)
-- Waiver wire analyzer complete with z-score based add/drop
-- Availability filtering for waiver suggestions (filters injured/suspended)
-- All major z-score inconsistencies resolved
-- Dashboard UI polished with responsive settings
-- Roto standings calculations accurate with proper tie handling
+
+All core optimization features are complete:
+
+- **Player Rankings** - All NBA players ranked by league-specific z-scores (400+ players)
+- **Trade Analyzer** - Multi-player trades (2-for-1, 3-for-2, etc.) with automatic roster management
+- **Waiver Wire Analyzer** - Z-score based add/drop with availability filtering
+- **Start Limit Optimizer** - Day-by-day Roto simulation with z-score player values
+- **ESPN-style Contribution Z-Scores** - Volume-aware FG%/FT% calculations
+- **Dynamic Roster Limits** - Fetched from ESPN, excludes IR slots
+- **Dashboard** - Standings, projections, quick insights with auto-refresh
+
+**Z-Score Methodology:**
+- Counting stats: Standard z-score formula
+- Percentage stats: Contribution-based (makes above/below expected)
+- Matches industry standards (ESPN Player Rater, Basketball Monster)
 
 **Next Steps:**
-1. **Player Rankings (Next Priority)** - Universal z-score based player rankings (see Section 3.8)
-2. H2H matchup analysis improvements
-3. Historical Performance Tracking
-4. Mobile responsive design refinements
-5. ML model training and integration
-6. Email notifications (future)
+1. H2H matchup analysis improvements
+2. Historical Performance Tracking
+3. Mobile responsive design refinements
+4. ML model training and integration
+5. Email notifications (future)
 
 ---
 
-**Document Version:** 1.5
-**Last Updated:** March 14, 2026
-**Changes:** Added Player Rankings feature (Section 3.8), updated Next Steps priority
+**Document Version:** 2.0
+**Last Updated:** March 19, 2026
+**Changes:**
+- Player Rankings complete (Section 3.8)
+- ESPN-style contribution z-scores implemented
+- Multi-player trade support complete
+- Updated z-score methodology throughout
 **Author:** Milo (with Claude)
-**Status:** Active Development
+**Status:** Core Features Complete
