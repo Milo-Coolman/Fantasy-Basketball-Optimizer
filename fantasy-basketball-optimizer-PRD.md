@@ -1017,6 +1017,217 @@ PlayerRankings/
 - Comparison mode (select multiple players to compare)
 - Integration with trade analyzer (auto-suggest based on z-scores)
 
+### 3.9 Daily Lineup Manager (Complete)
+
+A day-by-day lineup visualization tool that shows optimized player assignments for each position slot, helping users make daily start/sit decisions based on the start limit optimizer's recommendations.
+
+**Status:** Fully implemented (March 2026)
+
+**3.9.1 Overview**
+- Position-by-position optimized lineups for each day of the remaining season
+- Shows entire roster organized by status (Starting, Bench, Injured, No Game)
+- Date navigation with Previous Day, Today, and Next Day buttons
+- Default view: Today's date
+- Only available for Roto leagues with start limits enabled
+
+**3.9.2 Lineup Display Sections**
+
+**Starting Lineup:**
+- Position slots displayed in order: PG, SG, SF, PF, C, G, F, UTIL (multiple UTIL slots)
+- Each player entry shows:
+  - Position slot assignment (color-coded chip matching position)
+  - Player name and NBA team abbreviation
+  - "Playing" indicator with checkmark for active games
+- Players assigned based on optimizer's z-score priority
+
+**Bench (Have Game):**
+- Players whose teams play today but aren't assigned to starting slots
+- Sorted by z-score (highest first)
+- Indicates these players have games but were deprioritized due to:
+  - Position limits reached
+  - Higher z-score players filling available slots
+
+**Injured (OUT):**
+- Players marked as "OUT" by ESPN whose teams have games today
+- Orange styling for visual distinction
+- Shows players who WOULD be starting but are injured
+- Only displays if team actually has a game (checks NBA schedule)
+- DTD/Questionable players are NOT shown here (they're expected to play)
+
+**No Game Today:**
+- Players whose NBA teams don't have scheduled games
+- Includes injury status indicator if applicable (e.g., "DTD")
+- Sorted by z-score (highest first)
+
+**Injured Reserve:**
+- Players in IR/IL slots
+- Shows injury status and projected return date if available
+
+**3.9.3 Player-First Optimization Algorithm**
+
+The Daily Lineup uses a player-first optimization strategy that guarantees the highest z-score players start every game they can:
+
+**Algorithm Steps:**
+1. Sort all roster players by z-score (highest first)
+2. For each player (in z-score order), assign them to slots for ALL their remaining games
+3. Use most-specific-position-first slot assignment to preserve flexibility
+4. Skip if no eligible slots available or player reached projected games limit
+
+**Position Specificity Order:**
+```
+Most Specific → Least Specific
+PG, SG, SF, PF, C → G, F → UTIL
+```
+
+**Why Player-First?**
+- Guarantees top players (highest z-score) start every game they can
+- Day-by-day greedy approach can miss opportunities by assigning lower-value players first
+- Preserves roster flexibility for later assignments
+- Produces better overall results than traditional slot-by-slot assignment
+
+**Example:**
+```
+Player A: z=+5.2, eligible for SG, G, UTIL
+Player B: z=+3.1, eligible for SG, G, UTIL
+
+Player-First: A gets SG slot first (most specific), B gets G or UTIL
+Day-by-Day Greedy: Might give B the SG slot on some days if processed first
+```
+
+**3.9.4 Injury Handling**
+
+**Data Source:**
+- Real-time injury data from ESPN's `kona_playercard` API view
+- Includes `injuryStatus` and `injuryDetails` with expected return date
+
+**Status Handling:**
+| Status | Treatment | Display Section |
+|--------|-----------|-----------------|
+| OUT | Excluded from lineup | "Injured (OUT)" if team plays |
+| DAY_TO_DAY | Expected to play | Normal lineup assignment |
+| QUESTIONABLE | Expected to play | Normal lineup assignment |
+| DOUBTFUL | Expected to play | Normal lineup assignment |
+
+**Return Date Logic:**
+- OUT with return date: Excluded from games until that date
+- OUT without return date: Assumed to return tomorrow (conservative)
+- Schedule checked to verify player's team actually has a game
+
+**3.9.5 Summary Statistics**
+
+The header displays key metrics:
+- **Players with Games:** Count of roster players whose teams play today
+- **Starters:** Number of players assigned to starting slots
+- **Benched:** Players with games not starting (slot constraints)
+- **Injured:** OUT players whose teams have games
+- **No Game:** Players whose teams don't play today
+
+**3.9.6 Date Navigation**
+
+**Navigation Controls:**
+- **Previous Day (←):** Navigate to previous calendar day
+- **Today Button:** Jump to current date
+- **Next Day (→):** Navigate to next calendar day
+
+**Date Display:**
+- Full formatted date (e.g., "March 23, 2026")
+- Day of week
+- Simulation range indicator (start/end dates)
+
+**3.9.7 Technical Implementation**
+
+**Backend Endpoint:**
+```
+GET /api/leagues/{id}/daily-lineup?date=YYYY-MM-DD
+```
+
+**Query Parameters:**
+- `date`: Target date in ISO format (defaults to today)
+- `team_id`: Optional ESPN team ID (defaults to user's team)
+
+**Response Structure:**
+```json
+{
+  "date": "2026-03-23",
+  "formatted_date": "March 23, 2026",
+  "day_of_week": "Monday",
+  "lineup_slots": {
+    "PG": { "player": {...}, "slot_id": 0 },
+    "SG": { "player": {...}, "slot_id": 1 },
+    ...
+  },
+  "bench": [...],
+  "injured": [...],
+  "no_game": [...],
+  "ir": [...],
+  "summary": {
+    "players_with_games": 8,
+    "starters": 7,
+    "benched": 1,
+    "injured": 1,
+    "no_game": 5
+  },
+  "start_limits": {
+    "position_starts_used": { "PG": 74, "SG": 75, ... },
+    "position_limits": { "PG": 82, "SG": 82, ... }
+  }
+}
+```
+
+**Caching:**
+- Simulation results cached for 5 minutes
+- Cache keyed by league_id
+- Clear cache endpoint: `POST /api/leagues/{id}/daily-lineup/clear-cache`
+
+**3.9.8 Dashboard Tab Navigation**
+
+The Daily Lineup is accessed via a tab navigation system in the League Dashboard:
+
+**Tab Structure:**
+| Tab | Content | Availability |
+|-----|---------|--------------|
+| Overview | Main dashboard (standings, insights, charts) | Always |
+| Daily Lineup | Daily lineup optimizer view | Roto leagues with start limits |
+| Player Rankings | Universal player rankings | Always |
+
+**Behavior:**
+- Components only render when their tab is active (lazy loading)
+- Active tab highlighted with distinct styling
+- Tab state persisted during session (not across page reloads)
+
+**3.9.9 Use Cases**
+
+**Daily Start/Sit Decisions:**
+- See exactly which player should fill each position slot
+- Understand why certain players are benched (position limits, z-score priority)
+
+**Injury Impact Assessment:**
+- Quickly identify which injured players' teams have games today
+- Plan for player returns and their impact on lineup
+
+**Future Planning:**
+- Navigate to future dates to see projected lineups
+- Identify days with many players having games vs. light days
+- Plan streaming pickups for position needs
+
+**Position Limit Tracking:**
+- Monitor starts used vs. remaining for each position
+- Identify positions approaching their limits
+- Adjust strategy if certain positions are filling faster
+
+**3.9.10 Key Files**
+
+**Backend:**
+- `backend/api/daily_lineup.py` - API endpoint with caching
+- `backend/projections/start_limit_optimizer.py` - Player-first optimization algorithm
+
+**Frontend:**
+- `frontend/src/components/DailyLineup.js` - Main UI component
+- `frontend/src/components/LeagueDashboard.js` - Tab navigation integration
+
+**Styles:**
+- `frontend/src/styles/App.css` - Position chip colors, injured section styling, tab styles
+
 ---
 
 ## 4. Database Schema

@@ -84,6 +84,24 @@ POSITION_TO_SLOT_ID = {v: k for k, v in SLOT_ID_TO_POSITION.items()}
 # Active starting positions (not bench or IR)
 STARTING_SLOT_IDS = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
 
+# Slot specificity for player-first optimization
+# Lower number = more specific = should be used first to preserve flexible slots
+# Single positions (most specific) -> Two-position flex -> UTIL (most flexible)
+SLOT_SPECIFICITY = {
+    0: 1,   # PG - single position
+    1: 1,   # SG - single position
+    2: 1,   # SF - single position
+    3: 1,   # PF - single position
+    4: 1,   # C - single position
+    5: 2,   # G (PG/SG) - two-position flex
+    6: 2,   # F (SF/PF) - two-position flex
+    7: 2,   # SG/SF - two-position flex
+    9: 2,   # PF/C - two-position flex
+    10: 2,  # F/C - two-position flex
+    8: 3,   # G/F - three-position flex
+    11: 4,  # UTIL - most flexible (use last)
+}
+
 # Default games per slot for the season
 DEFAULT_GAMES_PER_SLOT = 82
 
@@ -1276,7 +1294,7 @@ class StartLimitOptimizer:
                 f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/fba/"
                 f"seasons/{self.season}/segments/0/leagues/{self.league_id}"
             )
-            params = {'view': ['mTeam', 'mRoster']}
+            params = {'view': ['mTeam', 'mRoster', 'kona_playercard']}
             cookies = {'espn_s2': self.espn_s2, 'SWID': self.swid}
 
             response = requests.get(endpoint, params=params, cookies=cookies, timeout=15)
@@ -1301,7 +1319,8 @@ class StartLimitOptimizer:
 
                 roster = []
                 for entry in roster_entries:
-                    player_data = entry.get('playerPoolEntry', {}).get('player', {})
+                    player_pool_entry = entry.get('playerPoolEntry', {})
+                    player_data = player_pool_entry.get('player', {})
                     player_id = player_data.get('id', 0)
                     player_name = player_data.get('fullName', 'Unknown')
                     pro_team_id = player_data.get('proTeamId', 0)
@@ -1311,6 +1330,36 @@ class StartLimitOptimizer:
                     # Get eligible slots
                     eligible_slots = player_data.get('eligibleSlots', [])
                     eligible_slots = [s for s in eligible_slots if s in STARTING_SLOT_IDS]
+
+                    # Get injury status from ESPN API
+                    injury_status = player_data.get('injuryStatus', 'ACTIVE')
+                    if injury_status == 'ACTIVE' or not injury_status:
+                        injury_status = None
+
+                    # Get injury details (return date, out for season, etc.)
+                    injury_details = None
+                    raw_injury_details = (
+                        player_data.get('injuryDetails') or
+                        player_pool_entry.get('injuryDetails')
+                    )
+                    if raw_injury_details and isinstance(raw_injury_details, dict):
+                        injury_details = {}
+                        injury_details['out_for_season'] = raw_injury_details.get('outForSeason', False)
+                        injury_details['injury_type'] = raw_injury_details.get('type', '')
+
+                        # Parse expected return date
+                        raw_return_date = raw_injury_details.get('expectedReturnDate')
+                        if raw_return_date:
+                            try:
+                                from datetime import datetime
+                                # ESPN returns date as Unix timestamp in milliseconds
+                                if isinstance(raw_return_date, (int, float)):
+                                    return_date_obj = datetime.fromtimestamp(raw_return_date / 1000).date()
+                                else:
+                                    return_date_obj = datetime.strptime(str(raw_return_date), '%Y-%m-%d').date()
+                                injury_details['expected_return_date'] = return_date_obj
+                            except (ValueError, TypeError):
+                                pass
 
                     # Get per-game stats from player stats
                     per_game_stats = {}
@@ -1345,6 +1394,8 @@ class StartLimitOptimizer:
                         'per_game_stats': per_game_stats,
                         'per_game_value': per_game_value,
                         'lineupSlotId': lineup_slot_id,
+                        'injury_status': injury_status,
+                        'injury_details': injury_details,
                     })
 
                 all_teams_rosters[team_id] = roster
@@ -2246,6 +2297,223 @@ class StartLimitOptimizer:
             slots_at_limit=slots_at_limit
         )
 
+    def simulate_season_player_first(
+        self,
+        player_logs: Dict[int, PlayerGameLog],
+        player_schedules: Dict[int, Set[date]],
+        player_projected_games: Dict[int, int],
+        slots: List[Tuple[int, str]],
+        stat_limits: Dict[int, int],
+        initial_starts_used: Dict[int, int],
+        start_date: date,
+        end_date: date,
+        active_player_ids: Set[int],
+        ir_player_ids: Set[int],
+        out_player_ids: Set[int],
+        dropped_player_ids: Set[int],
+        ir_return_schedule: Dict[date, List],
+        out_player_return_schedule: Dict[date, List]
+    ) -> Tuple[List[DaySimulation], Dict[int, int]]:
+        """
+        Player-first season simulation.
+
+        Instead of day-by-day greedy assignment, this method:
+        1. Sorts all players by z-score (highest first)
+        2. For each player, assigns them to slots for ALL their games
+        3. Uses most-specific-first slot assignment to preserve flexibility
+
+        This guarantees the highest z-score players start every game they can.
+
+        Returns:
+            Tuple of (daily_simulations, final_starts_used)
+        """
+        self._log("\n" + "-" * 70)
+        self._log("PLAYER-FIRST SEASON SIMULATION")
+        self._log("-" * 70)
+
+        # Build slot info
+        slot_counts = self.get_lineup_slot_counts()
+
+        # Track remaining capacity per slot (season total)
+        slot_season_remaining = {}
+        for slot_id, limit in stat_limits.items():
+            used = initial_starts_used.get(slot_id, 0)
+            slot_season_remaining[slot_id] = limit - used
+
+        # Build mapping from slot_id to list of slot indices in the slots list
+        slot_id_to_indices = defaultdict(list)
+        for idx, (slot_id, _) in enumerate(slots):
+            slot_id_to_indices[slot_id].append(idx)
+
+        # Pre-compute player availability windows (accounting for IR/OUT returns)
+        # Build a dict: player_id -> set of dates they're available
+        player_available_dates = {}
+
+        # Process return schedules to know when each player becomes active
+        player_activation_date = {}  # player_id -> date they become active
+
+        for ret_date, ir_players_returning in ir_return_schedule.items():
+            for ir_player in ir_players_returning:
+                player_activation_date[ir_player.player_id] = ret_date
+
+        for ret_date, out_players_returning in out_player_return_schedule.items():
+            for out_info in out_players_returning:
+                player_activation_date[out_info['player_id']] = ret_date
+
+        # Build available dates for each player
+        for player_id, game_dates in player_schedules.items():
+            if player_id in dropped_player_ids:
+                player_available_dates[player_id] = set()
+                continue
+
+            available = set()
+            activation = player_activation_date.get(player_id, start_date)
+
+            for game_date in game_dates:
+                # Player must be active on this date
+                if game_date >= activation:
+                    available.add(game_date)
+
+            player_available_dates[player_id] = available
+
+        # Sort players by z-score (highest first)
+        players_sorted = sorted(
+            player_logs.values(),
+            key=lambda p: p.per_game_value,
+            reverse=True
+        )
+
+        self._log(f"\nPlayer priority order (by z-score):")
+        for i, p in enumerate(players_sorted[:10]):
+            self._log(f"  {i+1}. {p.player_name}: z={p.per_game_value:+.2f}")
+        if len(players_sorted) > 10:
+            self._log(f"  ... and {len(players_sorted) - 10} more")
+
+        # Track assignments: date -> slot_idx -> player_id
+        daily_assignments = defaultdict(dict)
+        # Track daily slot usage: date -> slot_id -> count used
+        daily_slot_usage = defaultdict(lambda: defaultdict(int))
+        # Track player starts
+        player_starts_count = defaultdict(int)
+        # Track starts per position
+        position_starts = defaultdict(int, initial_starts_used)
+
+        # For each player (highest z-score first), assign all their games
+        for player in players_sorted:
+            player_id = player.player_id
+            eligible_slots = player.eligible_slots
+
+            # Sort eligible slots by specificity (most specific first)
+            eligible_slots_sorted = sorted(
+                eligible_slots,
+                key=lambda s: SLOT_SPECIFICITY.get(s, 99)
+            )
+
+            # Get player's available games
+            available_games = sorted(player_available_dates.get(player_id, set()))
+            projected_limit = player_projected_games.get(player_id, len(available_games))
+
+            games_assigned = 0
+
+            for game_date in available_games:
+                # Check if player has hit their projected games limit
+                if games_assigned >= projected_limit:
+                    break
+
+                # Try each eligible slot in specificity order (most specific first)
+                assigned = False
+                for slot_id in eligible_slots_sorted:
+                    # Check season capacity
+                    if slot_season_remaining.get(slot_id, 0) <= 0:
+                        continue
+
+                    # Check daily capacity
+                    daily_limit = slot_counts.get(slot_id, 0)
+                    daily_used = daily_slot_usage[game_date][slot_id]
+                    if daily_used >= daily_limit:
+                        continue
+
+                    # Find the slot index to use
+                    slot_indices = slot_id_to_indices[slot_id]
+                    slot_idx = slot_indices[daily_used] if daily_used < len(slot_indices) else slot_indices[0]
+
+                    # Assign!
+                    daily_assignments[game_date][slot_idx] = player_id
+                    daily_slot_usage[game_date][slot_id] += 1
+                    slot_season_remaining[slot_id] -= 1
+                    position_starts[slot_id] += 1
+                    games_assigned += 1
+                    player_starts_count[player_id] += 1
+
+                    # Update player log
+                    player.games_started += 1
+                    player.starts_by_position[slot_id] = \
+                        player.starts_by_position.get(slot_id, 0) + 1
+
+                    assigned = True
+                    break
+
+                if not assigned:
+                    # Player couldn't be assigned - they'll be benched this day
+                    player.games_benched += 1
+
+        # Log assignment summary
+        self._log(f"\nPlayer-first assignment summary:")
+        for player in players_sorted[:5]:
+            starts = player_starts_count[player.player_id]
+            available = len(player_available_dates.get(player.player_id, set()))
+            proj = player_projected_games.get(player.player_id, 0)
+            self._log(f"  {player.player_name}: {starts} starts (available: {available}, projected: {proj})")
+
+        # Build DaySimulation objects from assignments
+        daily_simulations = []
+        all_dates = set()
+        for player_id, dates in player_schedules.items():
+            all_dates.update(dates)
+
+        for current_date in sorted(all_dates):
+            if current_date < start_date or current_date > end_date:
+                continue
+
+            # Find players with games today
+            players_with_games = []
+            for player_id, dates in player_schedules.items():
+                if current_date in dates and player_id in player_available_dates:
+                    if current_date in player_available_dates[player_id] or current_date in dates:
+                        # Check if they were available this day
+                        activation = player_activation_date.get(player_id, start_date)
+                        if current_date >= activation and player_id not in dropped_player_ids:
+                            players_with_games.append(player_id)
+
+            if not players_with_games:
+                continue
+
+            # Get assignments for this day
+            assignments = daily_assignments.get(current_date, {})
+            assigned_players = set(assignments.values())
+
+            # Benched = have game but not assigned
+            benched = [p for p in players_with_games if p not in assigned_players]
+
+            # Check which slots are at their limit
+            slots_at_limit = []
+            for slot_id in slot_id_to_indices.keys():
+                if slot_season_remaining.get(slot_id, 0) <= 0:
+                    slots_at_limit.append(slot_id)
+
+            daily_simulations.append(DaySimulation(
+                game_date=current_date,
+                players_with_games=players_with_games,
+                assignments=assignments,
+                benched_players=benched,
+                slots_at_limit=slots_at_limit
+            ))
+
+        self._log(f"\nGenerated {len(daily_simulations)} daily simulations")
+        self._log(f"Final position starts: {dict(position_starts)}")
+
+        return daily_simulations, dict(position_starts)
+
     def simulate_season(
         self,
         roster: List[Dict],
@@ -2406,16 +2674,20 @@ class StartLimitOptimizer:
             full_team_games = self.get_player_nba_team_schedule(nba_team, start_date, end_date)
             total_team_games = len(full_team_games)
 
-            # Check for ACTUAL injury data from ESPN (not back-calculated)
-            # Only use return date logic if player has real injury_details with expected_return_date
+            # Check for injury status and details from ESPN
+            injury_status = player.get('injury_status')
             injury_details = player.get('injury_details')
             actual_return_date = None
 
             if injury_details and isinstance(injury_details, dict):
                 actual_return_date = injury_details.get('expected_return_date')
 
-            # If player has ACTUAL ESPN injury return date, handle as OUT player
-            if actual_return_date and actual_return_date > start_date and actual_return_date <= end_date:
+            # Handle OUT players only (not DTD/Questionable - those are expected to play)
+            # Case 1: Player has a return date in the future
+            # Case 2: Player is OUT but no return date (use tomorrow as default)
+            is_currently_out = injury_status and injury_status.upper() == 'OUT'
+
+            if is_currently_out and actual_return_date and actual_return_date > start_date and actual_return_date <= end_date:
                 out_player_ids.add(player_id)
 
                 # Get schedule from return date onward only (for daily simulation)
@@ -2444,6 +2716,39 @@ class StartLimitOptimizer:
 
                 self._log(f"  {player_name} ({nba_team}): INJURED, ESPN return={actual_return_date}, "
                          f"projected_games={player_projected_games}, z-value={per_game_value:+.2f}/game")
+                continue
+
+            # Handle players who are currently OUT but don't have a specific return date
+            # They should miss at least today's game
+            if is_currently_out and not actual_return_date:
+                out_player_ids.add(player_id)
+
+                # Use tomorrow as assumed return date (conservative - miss at least today)
+                from datetime import timedelta
+                assumed_return = start_date + timedelta(days=1)
+
+                # Get schedule from tomorrow onward
+                team_games = self.get_player_nba_team_schedule(nba_team, assumed_return, end_date)
+                player_schedules[player_id] = set(team_games)
+
+                # Create player log
+                player_logs[player_id] = PlayerGameLog(
+                    player_id=player_id,
+                    player_name=player_name,
+                    nba_team=nba_team,
+                    eligible_slots=eligible_starting,
+                    per_game_value=per_game_value,
+                    total_games_available=projected_games,
+                )
+
+                # Schedule their return for tomorrow
+                out_player_return_schedule[assumed_return].append({
+                    'player_id': player_id,
+                    'player_name': player_name,
+                })
+
+                self._log(f"  {player_name} ({nba_team}): {injury_status} (no return date), "
+                         f"assuming return tomorrow, z-value={per_game_value:+.2f}/game")
                 continue
 
             # Regular active player - available for all remaining team games
@@ -2533,130 +2838,41 @@ class StartLimitOptimizer:
                                 self._log(f"  >>>   Scheduled to return: {ret_date}")
         self._log("=" * 70 + "\n")
 
-        # Simulate each day
-        self._log("\n" + "-" * 70)
-        self._log("DAY-BY-DAY SIMULATION")
-        self._log("-" * 70)
-
-        current_date = start_date
-        game_days = 0
-
-        # Track starts per player to enforce projected_games limit
-        player_starts_used = defaultdict(int)
-
         # Build projected_games lookup from roster
         player_projected_games = {}
         for p in roster:
             pid = p.get('player_id', 0)
             proj_games = p.get('original_projected_games', 0)
             player_projected_games[pid] = proj_games
-            self._log(f"  Player {p.get('name', 'Unknown')} (ID={pid}): projected_games limit = {proj_games}")
 
-        while current_date <= end_date:
-            # Check for IR player returns today
-            if include_ir_returns and current_date in ir_return_schedule:
-                for ir_player in ir_return_schedule[current_date]:
-                    # Activate IR player
-                    active_player_ids.add(ir_player.player_id)
-                    self._log(f"  {current_date}: IR RETURN - {ir_player.player_name} activated")
+        # =================================================================
+        # PLAYER-FIRST SIMULATION
+        # Instead of day-by-day greedy, we assign games player-by-player
+        # in z-score order to guarantee best players start all their games
+        # =================================================================
+        daily_simulations, starts_used = self.simulate_season_player_first(
+            player_logs=player_logs,
+            player_schedules=player_schedules,
+            player_projected_games=player_projected_games,
+            slots=slots,
+            stat_limits=stat_limits,
+            initial_starts_used=initial_starts_used or {},
+            start_date=start_date,
+            end_date=end_date,
+            active_player_ids=active_player_ids,
+            ir_player_ids=ir_player_ids,
+            out_player_ids=out_player_ids,
+            dropped_player_ids=dropped_player_ids,
+            ir_return_schedule=ir_return_schedule,
+            out_player_return_schedule=out_player_return_schedule
+        )
 
-                    # Drop the replaced player
-                    if ir_player.replacing_player_id:
-                        dropped_player_ids.add(ir_player.replacing_player_id)
-                        active_player_ids.discard(ir_player.replacing_player_id)
-                        self._log(f"  {current_date}: DROPPED - {ir_player.replacing_player_name}")
+        game_days = len(daily_simulations)
 
-            # Check for OUT player returns today (players in active slots with return dates)
-            if current_date in out_player_return_schedule:
-                for out_player_info in out_player_return_schedule[current_date]:
-                    player_id = out_player_info['player_id']
-                    player_name = out_player_info['player_name']
-                    active_player_ids.add(player_id)
-                    # Calculate remaining games for logging
-                    remaining_games = len([d for d in player_schedules.get(player_id, set()) if d >= current_date])
-                    self._log(f"  {current_date}: OUT RETURN - {player_name} activated, available for {remaining_games} games")
-
-            # Find players with games today (only active players, not dropped)
-            available_today = []
-            for player_id, game_dates in player_schedules.items():
-                log = player_logs.get(player_id)
-                player_name = log.player_name if log else f"ID:{player_id}"
-
-                # DEBUG: Check JJJ specifically on first few days
-                is_jjj_player = log and ('jaren' in log.player_name.lower() or 'jackson' in log.player_name.lower())
-                if is_jjj_player and game_days < 5:  # Only log first 5 game days
-                    has_game = current_date in game_dates
-                    is_dropped = player_id in dropped_player_ids
-                    is_ir_not_returned = player_id in ir_player_ids and player_id not in active_player_ids
-                    is_out_not_returned = player_id in out_player_ids and player_id not in active_player_ids
-                    is_active = player_id in active_player_ids
-                    self._log(f"  >>> JJJ DAY CHECK {current_date}: has_game={has_game}, "
-                             f"dropped={is_dropped}, ir_wait={is_ir_not_returned}, "
-                             f"out_wait={is_out_not_returned}, active={is_active}")
-                    self._log(f"  >>> JJJ in out_player_ids: {player_id in out_player_ids}, "
-                             f"in active_player_ids: {player_id in active_player_ids}")
-
-                # Skip dropped players
-                if player_id in dropped_player_ids:
-                    continue
-
-                # Skip IR players not yet returned
-                if player_id in ir_player_ids and player_id not in active_player_ids:
-                    continue
-
-                # Skip OUT players not yet returned
-                if player_id in out_player_ids and player_id not in active_player_ids:
-                    continue
-
-                if current_date in game_dates:
-                    if log:
-                        # Check if player has exhausted their projected_games limit
-                        proj_limit = player_projected_games.get(player_id, 0)
-                        starts_so_far = player_starts_used[player_id]
-                        if proj_limit > 0 and starts_so_far >= proj_limit:
-                            # Player has reached their projected games limit - skip
-                            if is_jjj_player or self.verbose:
-                                self._log(f"  >>> {log.player_name}: LIMIT REACHED ({starts_so_far}/{proj_limit} games)")
-                            continue
-
-                        # DEBUG: Log when JJJ is added to available players
-                        if is_jjj_player and game_days < 5:
-                            self._log(f"  >>> JJJ ADDED TO available_today on {current_date}!")
-
-                        available_today.append({
-                            'player_id': player_id,
-                            'name': log.player_name,
-                            'eligible_slots': log.eligible_slots,
-                            'per_game_value': log.per_game_value,
-                        })
-
-            if available_today:
-                game_days += 1
-
-                # Simulate this day
-                day_result = self.simulate_day(
-                    game_date=current_date,
-                    available_players=available_today,
-                    slots=slots,
-                    starts_used=starts_used,
-                    stat_limits=stat_limits,
-                    player_logs=player_logs
-                )
-                daily_simulations.append(day_result)
-
-                # Update player starts tracking based on assignments
-                # assignments is Dict[int, int] mapping slot_id -> player_id
-                for slot_id, assigned_player_id in day_result.assignments.items():
-                    player_starts_used[assigned_player_id] += 1
-
-                # Log summary for this day
-                if self.verbose and len(daily_simulations) <= 10:
-                    started = len(day_result.assignments)
-                    benched = len(day_result.benched_players)
-                    self._log(f"  {current_date}: {len(available_today)} players with games, "
-                             f"{started} started, {benched} benched")
-
-            current_date += timedelta(days=1)
+        # Build player_starts_used for logging
+        player_starts_used = defaultdict(int)
+        for log in player_logs.values():
+            player_starts_used[log.player_id] = log.games_started
 
         # Log final summary
         self._log("\n" + "=" * 70)

@@ -163,21 +163,58 @@ Excludes unavailable players:
 
 ### 4. Start Limit Optimizer (Roto)
 
-Day-by-day simulation for leagues with position start limits.
+Season simulation for leagues with position start limits using player-first optimization.
 
-**Process:**
-1. For each remaining day, identify players with games
-2. Assign highest z-value players to slots
-3. Enforce position limits and projected_games
-4. Track starts_used per position
+**Player-First Algorithm:**
+1. Sort all players by z-score (highest first)
+2. For each player, assign to slots for ALL their remaining games
+3. Use most-specific-position-first slot assignment (PG → G → UTIL)
+4. Skip if no eligible slots or player reached projected games limit
 
-**Z-Score Calculation:**
-Uses contribution-based FG%/FT% matching Player Rankings methodology.
+**Why Player-First?**
+- Guarantees top players (highest z-score) start every game they can
+- Better results than day-by-day greedy approach
+- Preserves roster flexibility for lower-priority players
+
+**Injury Handling:**
+- Only "OUT" status excludes players (not DTD/Questionable)
+- OUT with return date: excluded until that date
+- OUT without return date: assumed return tomorrow
+- Real-time data from ESPN `kona_playercard` view
 
 **Key Files:**
 - `backend/projections/start_limit_optimizer.py`
+- `simulate_season_player_first()` - Main optimization algorithm
 - `calculate_league_averages()` - League baseline calculation
 - `calculate_player_value()` - Z-score value computation
+
+### 5. Daily Lineup Manager (Complete)
+
+Day-by-day lineup visualization showing optimized player assignments.
+
+**Features:**
+- Position-by-position lineup for any date
+- Date navigation (Previous/Today/Next)
+- Sections: Starting Lineup, Bench, Injured (OUT), No Game, IR
+- Only for Roto leagues with start limits enabled
+
+**Injured Section Logic:**
+- Shows OUT players whose teams have games today
+- Checks NBA schedule to verify team actually plays
+- DTD/Questionable players NOT shown (expected to play)
+- Orange styling for visual distinction
+
+**Dashboard Tab Navigation:**
+- Three tabs: Overview | Daily Lineup | Player Rankings
+- Lazy loading: components render only when tab active
+- Daily Lineup tab only appears for Roto leagues with start limits
+
+**API Endpoint:** `GET /api/leagues/{id}/daily-lineup?date=YYYY-MM-DD`
+
+**Key Files:**
+- `backend/api/daily_lineup.py` - Endpoint with 5-minute caching
+- `frontend/src/components/DailyLineup.js` - UI component
+- `frontend/src/components/LeagueDashboard.js` - Tab navigation
 
 ---
 

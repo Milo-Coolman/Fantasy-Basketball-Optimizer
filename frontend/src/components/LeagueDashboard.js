@@ -8,6 +8,7 @@ import QuickInsights from './QuickInsights';
 import StartLimitsInfo from './StartLimitsInfo';
 import ProjectionSettings from './ProjectionSettings';
 import PlayerRankings from './PlayerRankings';
+import DailyLineup from './DailyLineup';
 
 /**
  * LeagueDashboard - Comprehensive league view with standings, projections, and insights
@@ -19,6 +20,7 @@ function LeagueDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [tradeSuggestions, setTradeSuggestions] = useState([]);
+  const [activeTab, setActiveTab] = useState('overview'); // 'overview', 'daily-lineup', 'player-rankings'
 
   /**
    * Fetch dashboard data from backend
@@ -349,39 +351,86 @@ function LeagueDashboard() {
       {/* Error banner (non-blocking) */}
       {error && <div className="alert alert-error">{error}</div>}
 
-      {/* Projection Settings - Collapsible panel */}
-      <ProjectionSettings
-        leagueId={parseInt(leagueId)}
-        onSettingsChange={() => {
-          // Settings changed - automatically refresh dashboard
-          loadDashboard(true);
-        }}
-      />
+      {/* Tab Navigation */}
+      <div className="dashboard-tabs">
+        <button
+          className={`dashboard-tab ${activeTab === 'overview' ? 'active' : ''}`}
+          onClick={() => setActiveTab('overview')}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="3" width="7" height="7" />
+            <rect x="14" y="3" width="7" height="7" />
+            <rect x="14" y="14" width="7" height="7" />
+            <rect x="3" y="14" width="7" height="7" />
+          </svg>
+          Overview
+        </button>
+        {isRoto && start_limits?.enabled && (
+          <button
+            className={`dashboard-tab ${activeTab === 'daily-lineup' ? 'active' : ''}`}
+            onClick={() => setActiveTab('daily-lineup')}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+              <line x1="16" y1="2" x2="16" y2="6" />
+              <line x1="8" y1="2" x2="8" y2="6" />
+              <line x1="3" y1="10" x2="21" y2="10" />
+            </svg>
+            Daily Lineup
+          </button>
+        )}
+        <button
+          className={`dashboard-tab ${activeTab === 'player-rankings' ? 'active' : ''}`}
+          onClick={() => setActiveTab('player-rankings')}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <line x1="8" y1="6" x2="21" y2="6" />
+            <line x1="8" y1="12" x2="21" y2="12" />
+            <line x1="8" y1="18" x2="21" y2="18" />
+            <line x1="3" y1="6" x2="3.01" y2="6" />
+            <line x1="3" y1="12" x2="3.01" y2="12" />
+            <line x1="3" y1="18" x2="3.01" y2="18" />
+          </svg>
+          Player Rankings
+        </button>
+      </div>
 
-      {/* User Team Highlight */}
-      {user_team && (
-        <UserTeamHighlight
-          userTeam={user_team}
-          isH2H={isH2H}
-          isRoto={isRoto}
-          categoryMovements={categoryMovements}
-        />
-      )}
-
-      {/* Start Limits Info - Only show for Roto leagues when enabled */}
-      {isRoto && start_limits?.enabled && (
-        <div className="start-limits-section">
-          <StartLimitsInfo
-            startLimits={start_limits}
-            showIRReturns={true}
-            compact={false}
-            title="Position Start Limits"
+      {/* Overview Tab Content */}
+      {activeTab === 'overview' && (
+        <>
+          {/* Projection Settings - Collapsible panel */}
+          <ProjectionSettings
+            leagueId={parseInt(leagueId)}
+            onSettingsChange={() => {
+              // Settings changed - automatically refresh dashboard
+              loadDashboard(true);
+            }}
           />
-        </div>
-      )}
 
-      {/* Main Content - Two Column Layout (8/4 split) */}
-      <div className="dashboard-columns two-column-layout">
+          {/* User Team Highlight */}
+          {user_team && (
+            <UserTeamHighlight
+              userTeam={user_team}
+              isH2H={isH2H}
+              isRoto={isRoto}
+              categoryMovements={categoryMovements}
+            />
+          )}
+
+          {/* Start Limits Info - Only show for Roto leagues when enabled */}
+          {isRoto && start_limits?.enabled && (
+            <div className="start-limits-section">
+              <StartLimitsInfo
+                startLimits={start_limits}
+                showIRReturns={true}
+                compact={false}
+                title="Position Start Limits"
+              />
+            </div>
+          )}
+
+          {/* Main Content - Two Column Layout (8/4 split) */}
+          <div className="dashboard-columns two-column-layout">
         {/* Left Column: Current Standings + Projected stacked */}
         <div className="dashboard-column-wide">
           {/* Current Standings */}
@@ -469,9 +518,18 @@ function LeagueDashboard() {
           />
         )}
       </div>
+        </>
+      )}
 
-      {/* Player Rankings Section */}
-      <PlayerRankings leagueId={parseInt(leagueId)} />
+      {/* Daily Lineup Tab Content */}
+      {activeTab === 'daily-lineup' && isRoto && start_limits?.enabled && (
+        <DailyLineup leagueId={parseInt(leagueId)} />
+      )}
+
+      {/* Player Rankings Tab Content */}
+      {activeTab === 'player-rankings' && (
+        <PlayerRankings leagueId={parseInt(leagueId)} />
+      )}
     </div>
   );
 }
