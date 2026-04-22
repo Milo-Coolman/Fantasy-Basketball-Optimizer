@@ -114,9 +114,33 @@ def get_cached_simulation(league_id: int, league: League):
     start_date, end_date = optimizer.get_season_dates()
     game_rate = league.flat_game_rate or 0.85
 
+    # Statuses that indicate player is unavailable
+    UNAVAILABLE_STATUSES = {'SUSPENSION', 'INACTIVE', 'SUSPENDED'}
+
     for player in roster:
         nba_team = player.get('nba_team')
-        if nba_team:
+
+        # Check if player is out for the season
+        injury_details = player.get('injury_details')
+        out_for_season = False
+        if injury_details and isinstance(injury_details, dict):
+            out_for_season = injury_details.get('out_for_season', False)
+
+        # Check if player is suspended or inactive
+        injury_status = player.get('injury_status', '')
+        is_suspended = injury_status and injury_status.upper() in UNAVAILABLE_STATUSES
+
+        if out_for_season:
+            # Player is out for the season - no projected games
+            player['projected_games'] = 0
+            player['original_projected_games'] = 0
+            logger.info(f"Player {player.get('name')}: OUT FOR SEASON, projected_games=0")
+        elif is_suspended:
+            # Player is suspended/inactive - no projected games
+            player['projected_games'] = 0
+            player['original_projected_games'] = 0
+            logger.info(f"Player {player.get('name')}: {injury_status}, projected_games=0")
+        elif nba_team:
             # Get remaining games for this player's team
             remaining_games = optimizer.get_player_nba_team_schedule(
                 nba_team, start_date, end_date
@@ -218,8 +242,8 @@ def get_daily_lineup(league_id):
                 daily_sim = day_sim
                 break
 
-        if not daily_sim:
-            # Date not in simulation range
+        # Check if date is outside simulation range entirely
+        if not daily_sim and (selected_date < results.start_date or selected_date > results.end_date):
             available_dates = [
                 d.game_date.strftime('%Y-%m-%d')
                 for d in results.daily_simulations[:10]
@@ -233,6 +257,80 @@ def get_daily_lineup(league_id):
                     'end': results.end_date.strftime('%Y-%m-%d')
                 }
             }), 404
+
+        # If no daily_sim but date is within range, it means no games today
+        # Show all players in the "no game" section
+        if not daily_sim:
+            logger.info(f'No games on {selected_date} - showing all players as no game')
+
+            # Build player info from roster
+            no_game_players = []
+            ir_players = []
+
+            for player in user_roster:
+                pid = player.get('player_id')
+                lineup_slot_id = player.get('lineupSlotId', 0)
+                injury_status = player.get('injury_status')
+
+                player_entry = {
+                    'player': {
+                        'id': pid,
+                        'name': player.get('name', 'Unknown'),
+                        'team': player.get('nba_team', ''),
+                        'positions': [SLOT_ID_TO_POSITION.get(s, str(s)) for s in player.get('eligible_slots', [])]
+                    },
+                    'z_score': player.get('per_game_value', 0),
+                    'has_game_today': False
+                }
+
+                if injury_status:
+                    player_entry['injury_status'] = injury_status
+
+                # Check if player is on IR
+                if lineup_slot_id == 13:  # IR slot
+                    ir_players.append(player_entry)
+                else:
+                    no_game_players.append(player_entry)
+
+            # Sort by z-score
+            no_game_players.sort(key=lambda p: p['z_score'], reverse=True)
+
+            return jsonify({
+                'date': selected_date.strftime('%Y-%m-%d'),
+                'day_of_week': selected_date.strftime('%A'),
+                'formatted_date': selected_date.strftime('%B %d, %Y'),
+                'lineup_slots': {},
+                'bench': [],
+                'injured': [],
+                'no_game': no_game_players,
+                'ir': ir_players,
+                'summary': {
+                    'players_with_games': 0,
+                    'starters': 0,
+                    'benched': 0,
+                    'injured': 0,
+                    'no_game': len(no_game_players)
+                },
+                'simulation_info': {
+                    'start_date': results.start_date.strftime('%Y-%m-%d'),
+                    'end_date': results.end_date.strftime('%Y-%m-%d'),
+                    'total_days': results.total_days,
+                    'game_days': results.game_days
+                },
+                'start_limits': {
+                    'position_starts_used': {
+                        SLOT_ID_TO_POSITION.get(k, str(k)): v
+                        for k, v in results.position_starts_used.items()
+                        if k in STARTING_SLOT_IDS
+                    },
+                    'position_limits': {
+                        SLOT_ID_TO_POSITION.get(k, str(k)): v
+                        for k, v in results.position_limits.items()
+                        if k in STARTING_SLOT_IDS
+                    }
+                },
+                'no_games_today': True
+            })
 
         # Build lineup slots from assignments
         lineup_slots = {}

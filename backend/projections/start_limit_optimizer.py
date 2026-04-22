@@ -2664,6 +2664,19 @@ class StartLimitOptimizer:
                 self._log(f"  {player_name} ({nba_team}): projected_games=0, EXCLUDING from optimization")
                 continue
 
+            # Check for out_for_season flag from ESPN injury details
+            injury_details = player.get('injury_details')
+            if injury_details and isinstance(injury_details, dict):
+                if injury_details.get('out_for_season', False):
+                    self._log(f"  {player_name} ({nba_team}): OUT FOR SEASON, EXCLUDING from optimization")
+                    continue
+
+            # Check for suspended/inactive players
+            injury_status = player.get('injury_status', '')
+            if injury_status and injury_status.upper() in {'SUSPENSION', 'INACTIVE', 'SUSPENDED'}:
+                self._log(f"  {player_name} ({nba_team}): {injury_status}, EXCLUDING from optimization")
+                continue
+
             # Skip IR players - they're handled separately via ir_players list
             if lineup_slot_id == IR_SLOT_ID:
                 self._log(f"  {player_name} ({nba_team}): ON IR slot, projected_games={projected_games}, "
