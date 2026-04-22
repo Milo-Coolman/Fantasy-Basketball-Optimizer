@@ -590,6 +590,61 @@ class ESPNClient:
             logger.warning(f"Could not get scoring settings: {e}")
             return {}
 
+    def get_keeper_settings(self) -> Dict[str, Any]:
+        """
+        Get keeper league settings.
+
+        Returns:
+            Dictionary containing:
+                - keeper_count: Number of keepers allowed (0 if not a keeper league)
+                - is_keeper_league: Boolean indicating if this is a keeper league
+                - keeper_rules: Additional keeper rules if available
+        """
+        try:
+            settings = self.league.settings
+
+            # Try various attribute names ESPN might use
+            keeper_count = 0
+            keeper_attrs = ['keeper_count', 'keeperCount', 'keepers', 'numKeepers']
+
+            for attr in keeper_attrs:
+                val = getattr(settings, attr, None)
+                if val is not None and isinstance(val, int) and val > 0:
+                    keeper_count = val
+                    break
+
+            # Also check in raw settings dict if available
+            if keeper_count == 0 and hasattr(settings, '__dict__'):
+                settings_dict = settings.__dict__
+                for key in settings_dict:
+                    if 'keeper' in key.lower():
+                        val = settings_dict[key]
+                        if isinstance(val, int) and val > 0:
+                            keeper_count = val
+                            logger.info(f"Found keeper setting: {key}={val}")
+                            break
+
+            is_keeper_league = keeper_count > 0
+
+            result = {
+                'keeper_count': keeper_count,
+                'is_keeper_league': is_keeper_league,
+            }
+
+            if is_keeper_league:
+                logger.info(f"League has keepers enabled: {keeper_count} keepers")
+            else:
+                logger.debug("League does not have keepers enabled")
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"Could not get keeper settings: {e}")
+            return {
+                'keeper_count': 0,
+                'is_keeper_league': False,
+            }
+
     # ESPN Stat ID to category name mapping
     ESPN_STAT_ID_MAP = {
         0: 'PTS',
@@ -1748,12 +1803,16 @@ class ESPNClient:
             # Has injuryDetails but ACTIVE status - this would be suspicious
             logger.warning(f"_parse_player {player_name}: ACTIVE but has injury_details={injury_details}")
 
+        # Get player age (ESPN provides this directly)
+        player_age = getattr(player, 'age', None)
+
         return {
             'espn_player_id': player.playerId,
             'player_id': player.playerId,  # Also store as player_id for consistency
             'name': player.name,
             'position': getattr(player, 'position', 'UNKNOWN'),
             'nba_team': getattr(player, 'proTeam', 'FA'),
+            'age': player_age,
             'injury_status': injury_status,
             'injury_date': injury_date,
             'injury_notes': injury_notes,
@@ -2278,6 +2337,122 @@ class ESPNClient:
         except Exception as e:
             logger.error(f"Connection validation failed: {e}")
             raise ESPNConnectionError(f"Connection validation failed: {e}")
+
+
+# =============================================================================
+# Player Age Fetching
+# =============================================================================
+
+def fetch_player_age(espn_player_id: int) -> Optional[int]:
+    """
+    Fetch a player's age from ESPN's public athlete API.
+
+    This uses ESPN's main site API (not fantasy API) which includes
+    player biographical information including age.
+
+    Args:
+        espn_player_id: ESPN's player ID
+
+    Returns:
+        Player's age or None if not found
+    """
+    import requests
+
+    try:
+        url = f"https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/{espn_player_id}"
+        response = requests.get(url, timeout=10)
+
+        if response.status_code == 404:
+            logger.debug(f"Player {espn_player_id} not found in ESPN athlete API")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        # Age is directly available in the athlete object
+        athlete = data.get('athlete', data)
+        age = athlete.get('age')
+
+        if age is not None:
+            logger.debug(f"Found age for player {espn_player_id}: {age}")
+            return int(age)
+
+        return None
+
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Failed to fetch age for player {espn_player_id}: {e}")
+        return None
+    except (ValueError, KeyError) as e:
+        logger.warning(f"Failed to parse age for player {espn_player_id}: {e}")
+        return None
+
+
+def get_player_ages(player_ids: list, season: int) -> dict:
+    """
+    Get ages for multiple players, using cache when available.
+
+    Fetches from cache first, then fetches missing players from ESPN API
+    and caches the results.
+
+    Args:
+        player_ids: List of ESPN player IDs
+        season: Current season year (for cache invalidation)
+
+    Returns:
+        Dictionary mapping player_id -> age (int or None)
+    """
+    from backend.models import PlayerBirthDate
+    from backend.extensions import db
+
+    ages = {}
+
+    # First check cache for all players
+    cached = PlayerBirthDate.query.filter(
+        PlayerBirthDate.espn_player_id.in_(player_ids),
+        PlayerBirthDate.cached_season == season
+    ).all()
+
+    cached_ids = set()
+    for entry in cached:
+        cached_ids.add(entry.espn_player_id)
+        ages[entry.espn_player_id] = entry.age
+
+    # Fetch missing players from ESPN API
+    missing_ids = [pid for pid in player_ids if pid not in cached_ids]
+
+    if missing_ids:
+        logger.info(f"Fetching ages for {len(missing_ids)} players from ESPN API")
+
+        for player_id in missing_ids:
+            age = fetch_player_age(player_id)
+
+            # Calculate approximate birth date from age for caching
+            # (ESPN provides age directly, not birth date)
+            birth_date = None
+            if age is not None:
+                today = date.today()
+                # Approximate: assume birthday is today minus age years
+                birth_date = date(today.year - age, today.month, today.day)
+                ages[player_id] = age
+            else:
+                ages[player_id] = None
+
+            # Cache the result (even if None, so we don't keep retrying)
+            cache_entry = PlayerBirthDate(
+                espn_player_id=player_id,
+                birth_date=birth_date,
+                cached_season=season
+            )
+            db.session.merge(cache_entry)
+
+        try:
+            db.session.commit()
+            logger.info(f"Cached ages for {len(missing_ids)} players")
+        except Exception as e:
+            logger.error(f"Failed to cache ages: {e}")
+            db.session.rollback()
+
+    return ages
 
 
 # =============================================================================

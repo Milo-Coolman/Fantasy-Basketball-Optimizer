@@ -6956,3 +6956,340 @@ a:hover {
     flex: 1;
   }
 }
+
+/* =============================================================================
+   KEEPERS STYLES
+   ============================================================================= */
+
+.keepers-container {
+  background: var(--bg-primary);
+  border-radius: var(--border-radius-lg);
+  padding: var(--spacing-xl);
+  margin-top: var(--spacing-lg);
+}
+
+.keepers-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-md);
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+}
+
+.keepers-header h2 {
+  font-size: 1.5rem;
+  color: var(--text-primary);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.keeper-info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+}
+
+.keeper-count {
+  background: var(--bg-secondary);
+  padding: var(--spacing-xs) var(--spacing-md);
+  border-radius: var(--border-radius-md);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.keeper-count strong {
+  color: var(--color-primary);
+}
+
+.team-selector-row {
+  margin-bottom: var(--spacing-md);
+}
+
+.team-dropdown {
+  width: 100%;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--border-radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.team-dropdown:hover {
+  border-color: var(--color-primary);
+}
+
+.team-dropdown:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(var(--color-primary-rgb), 0.2);
+}
+
+.keepers-description {
+  color: var(--text-secondary);
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-md);
+  background: var(--bg-tertiary);
+  border-radius: var(--border-radius-md);
+  border-left: 3px solid var(--color-primary);
+}
+
+.keepers-description p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.keepers-table-container {
+  overflow-x: auto;
+  margin-bottom: var(--spacing-lg);
+}
+
+.keepers-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.keepers-table th {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.65rem;
+  letter-spacing: 0.3px;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 2px solid var(--border-color);
+}
+
+.keepers-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+
+.keepers-table th.sortable:hover {
+  color: var(--color-primary);
+}
+
+.keepers-table th.sorted {
+  color: var(--color-primary);
+}
+
+.keepers-table th.category-header {
+  text-align: center;
+  min-width: 45px;
+}
+
+.keepers-table td {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.keepers-table tbody tr {
+  transition: background-color 0.15s ease;
+}
+
+.keepers-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.keepers-table tbody tr.keeper-candidate {
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.keepers-table tbody tr.keeper-candidate:hover {
+  background: rgba(251, 191, 36, 0.15);
+}
+
+.keepers-table .rank-cell {
+  font-weight: 700;
+  color: var(--text-primary);
+  width: 50px;
+}
+
+.keepers-table .player-name-cell {
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.keepers-table td.young-player {
+  color: var(--color-success);
+  font-weight: 600;
+}
+
+.keepers-table td.old-player {
+  color: var(--color-danger, #ef4444);
+  font-weight: 600;
+}
+
+.keepers-table .z-score-cell {
+  text-align: center;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.keepers-table .z-score-cell.z-excellent {
+  color: #16a34a;
+}
+
+.keepers-table .z-score-cell.z-good {
+  color: #22c55e;
+}
+
+.keepers-table .z-score-cell.z-average {
+  color: var(--text-secondary);
+}
+
+.keepers-table .z-score-cell.z-below {
+  color: #f97316;
+}
+
+.keepers-table .z-score-cell.z-poor {
+  color: #ef4444;
+}
+
+.keepers-legend {
+  background: var(--bg-secondary);
+  border-radius: var(--border-radius-md);
+  padding: var(--spacing-md);
+}
+
+.keepers-legend h4 {
+  margin: 0 0 var(--spacing-sm);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.legend-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-md);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.legend-color {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+
+.legend-color.keeper-candidate-color {
+  background: rgba(251, 191, 36, 0.3);
+  border: 2px solid #fbbf24;
+}
+
+.legend-color.young-player-color {
+  background: rgba(34, 197, 94, 0.3);
+  border: 2px solid #22c55e;
+}
+
+.z-score-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+  padding-top: var(--spacing-sm);
+  border-top: 1px solid var(--border-color);
+}
+
+.z-score-legend .legend-item {
+  font-size: 0.8rem;
+}
+
+.z-score-legend .z-excellent {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.z-score-legend .z-good {
+  color: #22c55e;
+  font-weight: 600;
+}
+
+.z-score-legend .z-average {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.z-score-legend .z-below {
+  color: #f97316;
+  font-weight: 600;
+}
+
+.z-score-legend .z-poor {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.keepers-not-available {
+  text-align: center;
+  padding: var(--spacing-xl);
+}
+
+.keepers-not-available h3 {
+  color: var(--text-primary);
+  margin-bottom: var(--spacing-sm);
+}
+
+.keepers-not-available p {
+  color: var(--text-secondary);
+}
+
+/* Keepers tab styling */
+.dashboard-tab.keepers-tab {
+  border-bottom: 2px solid transparent;
+}
+
+.dashboard-tab.keepers-tab.active {
+  border-bottom-color: #8b5cf6;
+  color: #8b5cf6;
+}
+
+.dashboard-tab.keepers-tab svg {
+  fill: none;
+}
+
+.dashboard-tab.keepers-tab.active svg {
+  fill: rgba(139, 92, 246, 0.2);
+  stroke: #8b5cf6;
+}
+
+/* Responsive keepers */
+@media (max-width: 768px) {
+  .keepers-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .keeper-info {
+    flex-wrap: wrap;
+  }
+
+  .keepers-table {
+    font-size: 0.8rem;
+  }
+
+  .keepers-table th,
+  .keepers-table td {
+    padding: var(--spacing-xs) var(--spacing-sm);
+  }
+}

@@ -1228,6 +1228,128 @@ The Daily Lineup is accessed via a tab navigation system in the League Dashboard
 **Styles:**
 - `frontend/src/styles/App.css` - Position chip colors, injured section styling, tab styles
 
+### 3.10 Keepers (Complete)
+
+A keeper league evaluation tool that ranks roster players by z-score to help users identify the best keepers for the upcoming season.
+
+**Status:** Fully implemented (April 2026)
+
+**3.10.1 Overview**
+- Auto-detects keeper leagues from ESPN league settings
+- Displays keeper count allowed per league
+- Team selector dropdown to view any team's roster
+- Ranks players by total z-score with per-category breakdowns
+- Shows player ages fetched from ESPN public athlete API
+- Color-coded ages: green (≤25 young value), red (≥32 declining value)
+- Highlights recommended keepers (top N players by z-score)
+
+**3.10.2 Features**
+
+**Team Selector:**
+- Dropdown menu with all league teams
+- User's team marked with "(You)"
+- Full-width dropdown above rankings table
+- Instantly loads selected team's roster
+
+**Player Rankings Table:**
+- Sortable columns: Rank, Player, Pos, Team, Age, GP, Z-Score, and all category z-scores
+- Click any column header to sort (including individual categories)
+- Default sort: Total z-score descending
+- Category z-scores shown for all league scoring categories
+
+**Age Display:**
+- Ages fetched from ESPN's public athlete API
+- Green highlight for players 25 or younger (long-term value)
+- Red highlight for players 32 or older (declining value)
+- Cached per-season to minimize API calls
+
+**Visual Indicators:**
+- Keeper candidates highlighted (top N based on keeper count)
+- Injury status badges (OUT, DTD)
+- Z-score color coding (green excellent, red poor)
+
+**3.10.3 Age Fetching & Caching**
+
+**Data Source:**
+- ESPN public athlete API: `https://site.api.espn.com/apis/common/v3/sports/basketball/nba/athletes/{id}`
+- Returns age directly (not birth date)
+
+**Caching Strategy:**
+- `PlayerBirthDate` database model stores approximate birth date
+- Cache keyed by `(espn_player_id, season)`
+- Cache invalidates automatically on new season
+- Stores approximate birth date calculated from age for cache persistence
+- Age property recalculates from stored birth date
+
+**3.10.4 API Endpoints**
+
+**GET /api/leagues/{id}/keepers**
+- Query params: `team_id` (optional, defaults to user's team)
+- Returns: keeper settings, team list, player rankings with z-scores
+
+**Response Structure:**
+```json
+{
+  "is_keeper_league": true,
+  "keeper_count": 3,
+  "team_id": 1,
+  "team_name": "Team Name",
+  "teams": [
+    { "team_id": 1, "team_name": "Team 1", "is_user_team": true },
+    { "team_id": 2, "team_name": "Team 2", "is_user_team": false }
+  ],
+  "players": [
+    {
+      "rank": 1,
+      "name": "Player Name",
+      "player_id": 12345,
+      "position": "PG",
+      "eligible_positions": ["PG", "SG"],
+      "nba_team": "DAL",
+      "age": 25,
+      "games_played": 65,
+      "injury_status": null,
+      "total_z_score": 12.5,
+      "category_z_scores": { "PTS": 3.2, "REB": 1.5, ... }
+    }
+  ],
+  "categories": ["FG%", "FT%", "3PM", "PTS", "REB", "AST", "STL", "BLK"]
+}
+```
+
+**GET /api/leagues/{id}/keeper-settings**
+- Returns keeper league status and keeper count
+
+**3.10.5 Key Files**
+
+**Backend:**
+- `backend/api/keepers.py` - Keepers API endpoints
+- `backend/services/espn_client.py` - `get_player_ages()`, `fetch_player_age()`
+- `backend/models.py` - `PlayerBirthDate` model for age caching
+
+**Frontend:**
+- `frontend/src/components/Keepers.js` - Main UI component
+- `frontend/src/components/LeagueDashboard.js` - Tab integration
+
+**Database:**
+- `player_birth_dates` table - Caches player ages per season
+
+**3.10.6 Use Cases**
+
+**Keeper Evaluation:**
+- Compare all roster players by z-score value
+- Identify young players with high z-scores (best keeper value)
+- Spot aging players to avoid keeping (≥32 with declining value)
+
+**League Scouting:**
+- View other teams' rosters to evaluate trade targets
+- Identify potential keeper steals on other teams
+- Compare keeper quality across the league
+
+**Draft Planning:**
+- Understand keeper landscape before draft
+- Plan draft strategy around known keepers
+
 ---
 
 ## 4. Database Schema
@@ -1389,6 +1511,19 @@ CREATE TABLE waiver_recommendations (
     was_followed BOOLEAN,
     UNIQUE(league_id, team_id, player_id, recommendation_date)
 );
+```
+
+### 4.10 Player Birth Dates Table (Age Cache)
+```sql
+CREATE TABLE player_birth_dates (
+    id SERIAL PRIMARY KEY,
+    espn_player_id INTEGER NOT NULL,
+    birth_date DATE, -- Approximate, calculated from age
+    cached_season INTEGER NOT NULL, -- Season when cached (refresh on new season)
+    cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(espn_player_id, cached_season)
+);
+CREATE INDEX ix_player_birth_dates_espn_player_id ON player_birth_dates (espn_player_id);
 ```
 
 ---
@@ -2171,7 +2306,7 @@ The primary projection approach uses the tiered weighting system documented in S
 
 The Fantasy Basketball Optimizer is a comprehensive web application that combines data science and web development to provide actionable insights for fantasy basketball managers. By integrating with ESPN Fantasy Basketball and leveraging z-score based analysis, the app delivers accurate projections, intelligent trade recommendations, and optimized waiver wire suggestions.
 
-**Current State (March 2026):**
+**Current State (April 2026):**
 
 All core optimization features are complete:
 
@@ -2181,6 +2316,7 @@ All core optimization features are complete:
 - **Start Limit Optimizer** - Day-by-day Roto simulation with z-score player values
 - **ESPN-style Contribution Z-Scores** - Volume-aware FG%/FT% calculations
 - **Dynamic Roster Limits** - Fetched from ESPN, excludes IR slots
+- **Keepers** - Keeper league rankings with age display and team selector
 - **Dashboard** - Standings, projections, quick insights with auto-refresh
 
 **Z-Score Methodology:**
@@ -2197,12 +2333,12 @@ All core optimization features are complete:
 
 ---
 
-**Document Version:** 2.0
-**Last Updated:** March 19, 2026
+**Document Version:** 2.1
+**Last Updated:** April 21, 2026
 **Changes:**
-- Player Rankings complete (Section 3.8)
-- ESPN-style contribution z-scores implemented
-- Multi-player trade support complete
-- Updated z-score methodology throughout
+- Keepers feature complete (Section 3.10)
+- Player age fetching from ESPN athlete API with per-season caching
+- Team selector dropdown for viewing any team's keeper rankings
+- PlayerBirthDate database table added (Section 4.10)
 **Author:** Milo (with Claude)
 **Status:** Core Features Complete

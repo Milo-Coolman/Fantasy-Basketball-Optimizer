@@ -827,3 +827,61 @@ class WaiverRecommendation(db.Model):
 
     def __repr__(self) -> str:
         return f'<WaiverRecommendation player={self.player_id} score={self.impact_score}>'
+
+
+# =============================================================================
+# PlayerBirthDate Cache Model
+# =============================================================================
+
+class PlayerBirthDate(db.Model):
+    """
+    Cache for player birth dates fetched from ESPN athlete API.
+
+    Birth dates are fetched once per season and cached to avoid
+    repeated API calls. Age can be calculated from birth_date.
+
+    Attributes:
+        id: Primary key
+        espn_player_id: ESPN's unique player identifier
+        birth_date: Player's date of birth
+        cached_season: Season when this was cached (refresh on new season)
+        cached_at: Timestamp when data was fetched
+    """
+
+    __tablename__ = 'player_birth_dates'
+
+    id = db.Column(db.Integer, primary_key=True)
+    espn_player_id = db.Column(db.Integer, nullable=False, index=True)
+    birth_date = db.Column(db.Date, nullable=True)
+    cached_season = db.Column(db.Integer, nullable=False)
+    cached_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('espn_player_id', 'cached_season', name='unique_player_season_birthdate'),
+    )
+
+    @property
+    def age(self) -> int:
+        """Calculate current age from birth date."""
+        if not self.birth_date:
+            return None
+        from datetime import date
+        today = date.today()
+        age = today.year - self.birth_date.year
+        # Adjust if birthday hasn't occurred yet this year
+        if (today.month, today.day) < (self.birth_date.month, self.birth_date.day):
+            age -= 1
+        return age
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for API responses."""
+        return {
+            'espn_player_id': self.espn_player_id,
+            'birth_date': self.birth_date.isoformat() if self.birth_date else None,
+            'age': self.age,
+            'cached_season': self.cached_season,
+            'cached_at': self.cached_at.isoformat() if self.cached_at else None
+        }
+
+    def __repr__(self) -> str:
+        return f'<PlayerBirthDate player={self.espn_player_id} age={self.age}>'

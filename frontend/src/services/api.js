@@ -344,6 +344,29 @@ export const switchSeason = async (leagueId, newSeason) => {
 };
 
 // =============================================================================
+// Keepers API Functions
+// =============================================================================
+
+/**
+ * Check if a league is a keeper league
+ */
+export const fetchKeeperSettings = async (leagueId) => {
+  const response = await api.get(`/leagues/${leagueId}/keeper-settings`);
+  return response.data;
+};
+
+/**
+ * Get keeper rankings and data for a league
+ * @param {number} leagueId - The league ID
+ * @param {number|null} teamId - Optional team ID to view (defaults to user's team)
+ */
+export const fetchKeepers = async (leagueId, teamId = null) => {
+  const params = teamId ? { team_id: teamId } : {};
+  const response = await api.get(`/leagues/${leagueId}/keepers`, { params });
+  return response.data;
+};
+
+// =============================================================================
 // Health Check
 // =============================================================================
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { fetchDashboard, refreshLeagueData, fetchTradeSuggestions, checkNewSeason, switchSeason } from '../services/api';
+import { fetchDashboard, refreshLeagueData, fetchTradeSuggestions, checkNewSeason, switchSeason, fetchKeeperSettings } from '../services/api';
 import StandingsTable from './StandingsTable';
 import ProjectionsChart from './ProjectionsChart';
 import CategoryComparisonChart from './CategoryComparisonChart';
@@ -10,6 +10,7 @@ import ProjectionSettings from './ProjectionSettings';
 import PlayerRankings from './PlayerRankings';
 import DailyLineup from './DailyLineup';
 import SeasonRecap from './SeasonRecap';
+import Keepers from './Keepers';
 
 /**
  * LeagueDashboard - Comprehensive league view with standings, projections, and insights
@@ -28,6 +29,9 @@ function LeagueDashboard() {
   const [newSeasonInfo, setNewSeasonInfo] = useState(null);
   const [showNewSeasonModal, setShowNewSeasonModal] = useState(false);
   const [switchingSeasons, setSwitchingSeasons] = useState(false);
+
+  // Keeper league state
+  const [isKeeperLeague, setIsKeeperLeague] = useState(false);
 
   /**
    * Fetch dashboard data from backend
@@ -141,6 +145,25 @@ function LeagueDashboard() {
     };
 
     checkForNewSeason();
+  }, [dashboardData?.league?.id, leagueId]);
+
+  /**
+   * Check if this is a keeper league
+   */
+  useEffect(() => {
+    const checkKeeperLeague = async () => {
+      if (!dashboardData?.league?.id) return;
+
+      try {
+        const settings = await fetchKeeperSettings(leagueId);
+        setIsKeeperLeague(settings.is_keeper_league || false);
+      } catch (err) {
+        // Silently fail - not critical
+        console.debug('Could not check keeper settings:', err);
+      }
+    };
+
+    checkKeeperLeague();
   }, [dashboardData?.league?.id, leagueId]);
 
   /**
@@ -527,6 +550,17 @@ function LeagueDashboard() {
             Season Recap
           </button>
         )}
+        {isKeeperLeague && (
+          <button
+            className={`dashboard-tab keepers-tab ${activeTab === 'keepers' ? 'active' : ''}`}
+            onClick={() => setActiveTab('keepers')}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+            </svg>
+            Keepers
+          </button>
+        )}
       </div>
 
       {/* Overview Tab Content */}
@@ -668,6 +702,11 @@ function LeagueDashboard() {
       {/* Season Recap Tab Content */}
       {activeTab === 'season-recap' && isSeasonComplete() && (
         <SeasonRecap leagueId={parseInt(leagueId)} />
+      )}
+
+      {/* Keepers Tab Content */}
+      {activeTab === 'keepers' && isKeeperLeague && (
+        <Keepers leagueId={parseInt(leagueId)} />
       )}
     </div>
   );
