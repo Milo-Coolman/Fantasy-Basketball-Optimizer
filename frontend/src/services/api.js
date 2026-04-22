@@ -309,6 +309,41 @@ export const updateProjectionSettings = async (leagueId, settings) => {
 };
 
 // =============================================================================
+// Season Recap API Functions
+// =============================================================================
+
+/**
+ * Fetch season recap data for a league
+ * Returns: final standings, MVP, category leaders, user team recap
+ */
+export const fetchSeasonRecap = async (leagueId) => {
+  const response = await api.get(`/leagues/${leagueId}/season-recap`);
+  return response.data;
+};
+
+// =============================================================================
+// Season Management API Functions
+// =============================================================================
+
+/**
+ * Check if a new season is available for a league
+ */
+export const checkNewSeason = async (leagueId) => {
+  const response = await api.get(`/leagues/${leagueId}/check-new-season`);
+  return response.data;
+};
+
+/**
+ * Switch league to a new season
+ */
+export const switchSeason = async (leagueId, newSeason) => {
+  const response = await api.post(`/leagues/${leagueId}/switch-season`, {
+    new_season: newSeason
+  });
+  return response.data;
+};
+
+// =============================================================================
 // Health Check
 // =============================================================================
 

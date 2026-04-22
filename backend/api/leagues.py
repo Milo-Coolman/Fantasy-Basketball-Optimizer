@@ -822,3 +822,144 @@ def trade_settings(league_id):
     except Exception as e:
         logger.error(f"Error updating trade settings: {e}")
         return jsonify({'error': 'Failed to update trade settings'}), 500
+
+
+@leagues_bp.route('/<int:league_id>/check-new-season', methods=['GET'])
+@login_required
+def check_new_season(league_id):
+    """
+    Check if a new NBA season is available for this league.
+
+    Returns:
+        {
+            new_season_available: bool,
+            current_season: int (league's stored season),
+            available_season: int (detected new season, if any),
+            message: str
+        }
+    """
+    try:
+        league = get_league_or_404(league_id, current_user.id)
+
+        current_season = league.season
+
+        # Determine what season should be current based on date
+        # NBA season runs Oct-Apr, so:
+        # - Oct-Dec: current year's season (e.g., Oct 2026 = 2027 season)
+        # - Jan-Apr: previous year's season (e.g., Jan 2027 = 2027 season)
+        # - May-Sep: previous season ended, new one not started
+        now = datetime.now()
+
+        if now.month >= 10:  # October-December
+            expected_season = now.year + 1
+        elif now.month <= 4:  # January-April (season in progress)
+            expected_season = now.year
+        else:  # May-September (offseason)
+            expected_season = now.year  # Next season would be now.year + 1, not started yet
+
+        # Check if we're behind the expected season
+        if current_season < expected_season:
+            # Try to verify the new season exists on ESPN
+            try:
+                test_client = ESPNClient(
+                    league_id=league.espn_league_id,
+                    year=expected_season,
+                    espn_s2=league.espn_s2_cookie,
+                    swid=league.swid_cookie
+                )
+                # If we can get teams, the season exists
+                teams = test_client.get_teams()
+                if teams and len(teams) > 0:
+                    return jsonify({
+                        'new_season_available': True,
+                        'current_season': current_season,
+                        'available_season': expected_season,
+                        'message': f'The {expected_season} season is now available!'
+                    }), 200
+            except Exception as e:
+                logger.debug(f"New season {expected_season} not yet available: {e}")
+
+        return jsonify({
+            'new_season_available': False,
+            'current_season': current_season,
+            'available_season': None,
+            'message': 'You are on the current season.'
+        }), 200
+
+    except LeagueNotFoundError:
+        return jsonify({'error': 'League not found'}), 404
+
+    except LeagueAccessDeniedError:
+        return jsonify({'error': 'Access denied'}), 403
+
+    except Exception as e:
+        logger.error(f"Error checking for new season: {e}")
+        return jsonify({'error': 'Failed to check for new season'}), 500
+
+
+@leagues_bp.route('/<int:league_id>/switch-season', methods=['POST'])
+@login_required
+def switch_season(league_id):
+    """
+    Switch league to a new season.
+
+    Request JSON:
+        new_season: int (the season year to switch to)
+
+    Returns:
+        Updated league info with new season.
+    """
+    from backend.extensions import db
+
+    try:
+        league = get_league_or_404(league_id, current_user.id)
+
+        data = request.get_json()
+        if not data or 'new_season' not in data:
+            return jsonify({'error': 'new_season is required'}), 400
+
+        new_season = data['new_season']
+        old_season = league.season
+
+        # Validate the new season exists on ESPN
+        try:
+            espn_client = ESPNClient(
+                league_id=league.espn_league_id,
+                year=new_season,
+                espn_s2=league.espn_s2_cookie,
+                swid=league.swid_cookie
+            )
+            teams = espn_client.get_teams()
+            if not teams:
+                return jsonify({'error': f'Season {new_season} not found on ESPN'}), 400
+        except ESPNLeagueNotFoundError:
+            return jsonify({'error': f'Season {new_season} not found on ESPN'}), 400
+        except ESPNAuthenticationError:
+            return jsonify({'error': 'ESPN authentication failed. Please update your cookies.'}), 401
+
+        # Update the league season
+        league.season = new_season
+        db.session.commit()
+
+        # Sync data from the new season
+        sync_results = sync_league_data(league, espn_client)
+
+        logger.info(f"Switched league {league_id} from season {old_season} to {new_season}")
+
+        return jsonify({
+            'success': True,
+            'old_season': old_season,
+            'new_season': new_season,
+            'league_name': league.league_name,
+            'sync_results': sync_results
+        }), 200
+
+    except LeagueNotFoundError:
+        return jsonify({'error': 'League not found'}), 404
+
+    except LeagueAccessDeniedError:
+        return jsonify({'error': 'Access denied'}), 403
+
+    except Exception as e:
+        logger.error(f"Error switching season: {e}")
+        return jsonify({'error': 'Failed to switch season'}), 500

@@ -121,6 +121,7 @@ def register_blueprints(app):
     from backend.api.dashboard import dashboard_bp
     from backend.api.players import players_bp
     from backend.api.daily_lineup import daily_lineup_bp
+    from backend.api.season_recap import season_recap_bp
 
     # Register blueprints with URL prefixes
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
@@ -131,6 +132,7 @@ def register_blueprints(app):
     app.register_blueprint(dashboard_bp, url_prefix='/api')
     app.register_blueprint(players_bp, url_prefix='/api')
     app.register_blueprint(daily_lineup_bp, url_prefix='/api')
+    app.register_blueprint(season_recap_bp, url_prefix='/api')
 
 
 def register_error_handlers(app):

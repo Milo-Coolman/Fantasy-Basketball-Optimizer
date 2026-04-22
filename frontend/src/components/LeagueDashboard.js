@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { fetchDashboard, refreshLeagueData, fetchTradeSuggestions } from '../services/api';
+import { fetchDashboard, refreshLeagueData, fetchTradeSuggestions, checkNewSeason, switchSeason } from '../services/api';
 import StandingsTable from './StandingsTable';
 import ProjectionsChart from './ProjectionsChart';
 import CategoryComparisonChart from './CategoryComparisonChart';
@@ -9,6 +9,7 @@ import StartLimitsInfo from './StartLimitsInfo';
 import ProjectionSettings from './ProjectionSettings';
 import PlayerRankings from './PlayerRankings';
 import DailyLineup from './DailyLineup';
+import SeasonRecap from './SeasonRecap';
 
 /**
  * LeagueDashboard - Comprehensive league view with standings, projections, and insights
@@ -20,7 +21,13 @@ function LeagueDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [tradeSuggestions, setTradeSuggestions] = useState([]);
-  const [activeTab, setActiveTab] = useState('overview'); // 'overview', 'daily-lineup', 'player-rankings'
+  const [activeTab, setActiveTab] = useState('overview'); // 'overview', 'daily-lineup', 'player-rankings', 'season-recap'
+  const [initialTabSet, setInitialTabSet] = useState(false);
+
+  // New season detection state
+  const [newSeasonInfo, setNewSeasonInfo] = useState(null);
+  const [showNewSeasonModal, setShowNewSeasonModal] = useState(false);
+  const [switchingSeasons, setSwitchingSeasons] = useState(false);
 
   /**
    * Fetch dashboard data from backend
@@ -101,6 +108,70 @@ function LeagueDashboard() {
   }, [loadDashboard]);
 
   /**
+   * Default to Season Recap tab when season is complete (only on initial load)
+   */
+  useEffect(() => {
+    if (dashboardData?.league?.season && !initialTabSet) {
+      const season = dashboardData.league.season;
+      const seasonEnd = new Date(season, 3, 13); // April 13
+      if (new Date() > seasonEnd) {
+        setActiveTab('season-recap');
+      }
+      setInitialTabSet(true);
+    }
+  }, [dashboardData, initialTabSet]);
+
+  /**
+   * Check for new season availability after dashboard loads
+   */
+  useEffect(() => {
+    const checkForNewSeason = async () => {
+      if (!dashboardData?.league?.id) return;
+
+      try {
+        const result = await checkNewSeason(leagueId);
+        if (result.new_season_available) {
+          setNewSeasonInfo(result);
+          setShowNewSeasonModal(true);
+        }
+      } catch (err) {
+        // Silently fail - not critical
+        console.debug('Could not check for new season:', err);
+      }
+    };
+
+    checkForNewSeason();
+  }, [dashboardData?.league?.id, leagueId]);
+
+  /**
+   * Handle switching to the new season
+   */
+  const handleSwitchSeason = async () => {
+    if (!newSeasonInfo?.available_season) return;
+
+    try {
+      setSwitchingSeasons(true);
+      await switchSeason(leagueId, newSeasonInfo.available_season);
+      setShowNewSeasonModal(false);
+      setNewSeasonInfo(null);
+      // Reload the dashboard with new season data
+      await loadDashboard();
+    } catch (err) {
+      console.error('Error switching season:', err);
+      setError(err.response?.data?.error || 'Failed to switch season');
+    } finally {
+      setSwitchingSeasons(false);
+    }
+  };
+
+  /**
+   * Dismiss the new season modal
+   */
+  const handleDismissNewSeason = () => {
+    setShowNewSeasonModal(false);
+  };
+
+  /**
    * Handle manual refresh - fetches fresh data from ESPN
    */
   const handleRefresh = async () => {
@@ -142,6 +213,16 @@ function LeagueDashboard() {
     const now = new Date();
     const weeksDiff = Math.floor((now - seasonStart) / (7 * 24 * 60 * 60 * 1000));
     return Math.max(1, weeksDiff + 1);
+  };
+
+  /**
+   * Check if NBA season is complete (past April 13)
+   */
+  const isSeasonComplete = () => {
+    const now = new Date();
+    const season = league?.season || now.getFullYear();
+    const seasonEnd = new Date(season, 3, 13); // April 13 (month is 0-indexed)
+    return now > seasonEnd;
   };
 
   // Loading state
@@ -351,6 +432,48 @@ function LeagueDashboard() {
       {/* Error banner (non-blocking) */}
       {error && <div className="alert alert-error">{error}</div>}
 
+      {/* New Season Available Modal */}
+      {showNewSeasonModal && newSeasonInfo && (
+        <div className="new-season-modal-overlay">
+          <div className="new-season-modal">
+            <div className="new-season-icon">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 6v6l4 2" />
+              </svg>
+            </div>
+            <h2>New Season Available!</h2>
+            <p>
+              The <strong>{newSeasonInfo.available_season}</strong> season has started.
+              Would you like to switch from the {newSeasonInfo.current_season} season?
+            </p>
+            <div className="new-season-actions">
+              <button
+                className="btn btn-primary"
+                onClick={handleSwitchSeason}
+                disabled={switchingSeasons}
+              >
+                {switchingSeasons ? (
+                  <>
+                    <span className="btn-spinner"></span>
+                    Switching...
+                  </>
+                ) : (
+                  `Switch to ${newSeasonInfo.available_season}`
+                )}
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={handleDismissNewSeason}
+                disabled={switchingSeasons}
+              >
+                Stay on {newSeasonInfo.current_season}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tab Navigation */}
       <div className="dashboard-tabs">
         <button
@@ -393,6 +516,17 @@ function LeagueDashboard() {
           </svg>
           Player Rankings
         </button>
+        {isSeasonComplete() && (
+          <button
+            className={`dashboard-tab season-recap-tab ${activeTab === 'season-recap' ? 'active' : ''}`}
+            onClick={() => setActiveTab('season-recap')}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2C9.24 2 7 4.24 7 7H5C3.34 7 2 8.34 2 10C2 11.66 3.34 13 5 13H7V14C7 16.76 9.24 19 12 19C14.76 19 17 16.76 17 14V13H19C20.66 13 22 11.66 22 10C22 8.34 20.66 7 19 7H17C17 4.24 14.76 2 12 2Z"/>
+            </svg>
+            Season Recap
+          </button>
+        )}
       </div>
 
       {/* Overview Tab Content */}
@@ -529,6 +663,11 @@ function LeagueDashboard() {
       {/* Player Rankings Tab Content */}
       {activeTab === 'player-rankings' && (
         <PlayerRankings leagueId={parseInt(leagueId)} />
+      )}
+
+      {/* Season Recap Tab Content */}
+      {activeTab === 'season-recap' && isSeasonComplete() && (
+        <SeasonRecap leagueId={parseInt(leagueId)} />
       )}
     </div>
   );
