@@ -97,9 +97,12 @@ def get_player_rankings(league_id):
         logger.info(f'   Fetched {len(all_players)} total NBA players')
 
         # Filter to players with minimum games played
-        MIN_GAMES = 5
-        active_players = [p for p in all_players if p.get('games_played', 0) >= MIN_GAMES]
-        logger.info(f'   Filtered to {len(active_players)} players with >= {MIN_GAMES} games')
+        # Use dynamic threshold: 5 games normally, but lower at season start
+        MIN_GAMES_TARGET = 5
+        max_games_played = max((p.get('games_played', 0) for p in all_players), default=0)
+        min_games = min(MIN_GAMES_TARGET, max(1, max_games_played))
+        active_players = [p for p in all_players if p.get('games_played', 0) >= min_games]
+        logger.info(f'   Filtered to {len(active_players)} players with >= {min_games} games (max in league: {max_games_played})')
 
         if not active_players:
             return jsonify({

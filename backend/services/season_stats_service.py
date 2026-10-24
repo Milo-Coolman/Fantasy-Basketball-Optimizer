@@ -117,7 +117,7 @@ class SeasonStatsService:
             'players_created': players_created,
             'players_updated': players_updated,
             'errors': errors,
-            'captured_at': datetime.utcnow().isoformat()
+            'captured_at': datetime.utcnow().isoformat() + 'Z'
         }
 
     def _fetch_bbref_season_stats(self, season: int) -> List[Dict[str, Any]]:

@@ -3222,7 +3222,7 @@ def get_dashboard(league_id: int):
                 'team_rosters': _add_z_scores_to_all_rosters(all_rosters, calculate_league_averages_for_trade(all_rosters), espn_client.year),
                 # League averages for trade z-score calculation
                 'league_averages': calculate_league_averages_for_trade(all_rosters),
-                'last_updated': datetime.utcnow().isoformat(),
+                'last_updated': datetime.utcnow().isoformat() + 'Z',
             }
 
         else:
@@ -3366,7 +3366,7 @@ def get_dashboard(league_id: int):
                 'team_rosters': _add_z_scores_to_all_rosters(all_rosters, calculate_league_averages_for_trade(all_rosters), espn_client.year),
                 # League averages for trade z-score calculation
                 'league_averages': calculate_league_averages_for_trade(all_rosters),
-                'last_updated': datetime.utcnow().isoformat(),
+                'last_updated': datetime.utcnow().isoformat() + 'Z',
             }
 
         # Cache the result
@@ -3502,7 +3502,7 @@ def get_standings_only(league_id: int):
             'user_team_id': my_team_id,
             'current_standings': current_standings,
             'projected_standings': projected_standings,
-            'last_updated': datetime.utcnow().isoformat(),
+            'last_updated': datetime.utcnow().isoformat() + 'Z',
         }
 
         # Include scoring categories for Roto leagues so frontend knows which columns to display
@@ -3583,7 +3583,7 @@ def get_insights_only(league_id: int):
             'category_analysis': category_analysis,
             'waiver_targets': waiver_targets,
             'trade_opportunities': trade_opportunities,
-            'last_updated': datetime.utcnow().isoformat(),
+            'last_updated': datetime.utcnow().isoformat() + 'Z',
         }), 200
 
     except LeagueNotFoundError:

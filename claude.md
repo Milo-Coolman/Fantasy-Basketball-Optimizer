@@ -35,7 +35,7 @@ A **Fantasy Basketball Optimizer** web application that integrates with ESPN Fan
 
 ---
 
-## Current Status (March 2026)
+## Current Status (October 2026)
 
 ### Completed Features
 - ESPN integration with espn-api package
@@ -47,6 +47,8 @@ A **Fantasy Basketball Optimizer** web application that integrates with ESPN Fan
 - **Trade Analyzer** - Multi-player trades with roster management (complete)
 - **Waiver Wire Analyzer** - Z-score based add/drop analysis (complete)
 - **ESPN-style Contribution Z-Scores** - Volume-aware FG%/FT% (complete)
+- **Keepers** - Keeper league rankings with age, z-scores, team selector (complete)
+- **Automatic Season Transitions** - Dynamic date handling with NBASeasonDates utility (complete)
 - Dashboard with standings, projections, quick insights
 - Roto tie handling, stats view toggle, auto-refresh
 
@@ -55,6 +57,8 @@ A **Fantasy Basketball Optimizer** web application that integrates with ESPN Fan
 - ESPN-style contribution method for FG%/FT% calculations
 - In-memory caching (24-hour) for Player Rankings
 - Dynamic roster limits from ESPN (excludes IR slots)
+- Centralized NBASeasonDates utility for all date calculations
+- Automatic season detection and transition on dashboard load
 
 ---
 
@@ -205,9 +209,10 @@ Day-by-day lineup visualization showing optimized player assignments.
 - Orange styling for visual distinction
 
 **Dashboard Tab Navigation:**
-- Three tabs: Overview | Daily Lineup | Player Rankings
+- Four tabs: Overview | Daily Lineup | Player Rankings | Keepers (if keeper league)
 - Lazy loading: components render only when tab active
 - Daily Lineup tab only appears for Roto leagues with start limits
+- Keepers tab only appears for keeper leagues
 
 **API Endpoint:** `GET /api/leagues/{id}/daily-lineup?date=YYYY-MM-DD`
 
@@ -215,6 +220,37 @@ Day-by-day lineup visualization showing optimized player assignments.
 - `backend/api/daily_lineup.py` - Endpoint with 5-minute caching
 - `frontend/src/components/DailyLineup.js` - UI component
 - `frontend/src/components/LeagueDashboard.js` - Tab navigation
+
+### 6. Keepers (Complete)
+
+Keeper league rankings to help users evaluate roster players for keeper selection.
+
+**Features:**
+- Auto-detects keeper leagues from ESPN settings
+- Shows keeper count allowed per league
+- Team selector dropdown to view any team's roster
+- Ranks roster players by total z-score
+- Shows player age (fetched from ESPN athlete API)
+- Shows games played, positions, injury status
+- Per-category z-scores for all league categories
+- Sortable by any column including categories
+- Age color-coding: green (≤25), red (≥32)
+- Highlights recommended keepers (top N by z-score)
+
+**Age Fetching:**
+- Ages fetched from ESPN public athlete API
+- Cached per-season in `player_birth_dates` table
+- Cache invalidates on new season
+
+**API Endpoints:**
+- `GET /api/leagues/{id}/keepers?team_id=X` - Get keeper rankings
+- `GET /api/leagues/{id}/keeper-settings` - Check if keeper league
+
+**Key Files:**
+- `backend/api/keepers.py` - Keepers endpoint
+- `backend/services/espn_client.py` - `get_player_ages()`, `fetch_player_age()`
+- `backend/models.py` - `PlayerBirthDate` model
+- `frontend/src/components/Keepers.js` - UI component
 
 ---
 
@@ -235,6 +271,46 @@ Day-by-day lineup visualization showing optimized player assignments.
 ---
 
 ## Technical Notes
+
+### NBASeasonDates Utility
+
+Centralized utility for all season date calculations, eliminating hardcoded dates across the codebase.
+
+**File:** `backend/utils/season_dates.py`
+
+```python
+from backend.utils.season_dates import NBASeasonDates
+
+# Get current season (Oct-Dec = year+1, Jan-Sep = year)
+season = NBASeasonDates.get_season_from_date()  # e.g., 2027 for Oct 2026
+
+# Get season boundaries
+start = NBASeasonDates.get_season_start(2027)  # date(2026, 10, 22)
+end = NBASeasonDates.get_season_end(2027)      # date(2027, 4, 13)
+
+# Check season status
+NBASeasonDates.is_season_complete(2027)  # True if past end date
+NBASeasonDates.get_season_progress(2027) # 0.0 to 1.0
+
+# All-Star break (3rd weekend of February)
+start, end = NBASeasonDates.get_all_star_break(2027)
+```
+
+**Season Identification:**
+- NBA seasons span two calendar years (e.g., 2026-27 season)
+- ESPN uses the ending year as identifier (2027 for 2026-27 season)
+- October-December dates → next year's season
+- January-September dates → current year's season
+
+**Files Using NBASeasonDates:**
+- `backend/api/daily_lineup.py` - Current season detection
+- `backend/api/dashboard.py` - Games remaining estimation
+- `backend/api/leagues.py` - New season detection
+- `backend/api/season_recap.py` - Season completion check
+- `backend/projections/hybrid_engine.py` - Season progress
+- `backend/projections/simple_projection.py` - Season dates
+- `backend/projections/start_limit_optimizer.py` - Season boundaries
+- `backend/scrapers/nba_schedule.py` - Schedule fetching
 
 ### FG%/FT% Z-Score Formula
 ```python
@@ -263,6 +339,24 @@ active_roster_limit = total_slots - ir_slots
 - Player Rankings: 1 game minimum (include all active players)
 - ROS Projections: Players with 0 projected games excluded
 
+### Hybrid Projection Engine
+
+Tiered weighting system for ROS projections based on games played:
+
+| Tier | Games Played | ESPN Projection | Current Stats |
+|------|-------------|-----------------|---------------|
+| 1    | 0-5         | 100%            | 0%            |
+| 2    | 6-15        | 60%             | 40%           |
+| 3    | 16-35       | 15%             | 85%           |
+| 4    | 36+         | 0%              | 100%          |
+
+**Rationale:**
+- Early season: Trust ESPN projections (limited sample size)
+- Mid-season: Blend both sources
+- Late season: Trust actual performance data
+
+**Key File:** `backend/projections/hybrid_engine.py`
+
 ---
 
 ## API Endpoints
@@ -278,6 +372,10 @@ active_roster_limit = total_slots - ir_slots
 ### Waivers
 - `POST /api/leagues/{id}/waivers/analyze` - Analyze add/drop
 - `GET /api/leagues/{id}/waivers/suggestions` - Get suggestions
+
+### Keepers
+- `GET /api/leagues/{id}/keepers?team_id=X` - Get keeper rankings for team
+- `GET /api/leagues/{id}/keeper-settings` - Check keeper league status
 
 ### Dashboard
 - `GET /api/leagues/{id}/dashboard` - Full dashboard data
@@ -310,6 +408,11 @@ flask db upgrade
 
 ## Bug Fixes Log
 
+### October 2026
+- **Week 105 bug:** Fixed season not transitioning automatically
+- **Hardcoded dates:** Replaced with centralized NBASeasonDates utility
+- **ML code removal:** Simplified hybrid engine to ESPN + current stats only
+
 ### March 2026
 - **Auto-drop logic:** Fixed 0 vs None handling for z-scores
 - **Roster limits:** Dynamic fetching from ESPN (excludes IR)
@@ -327,10 +430,9 @@ flask db upgrade
 1. H2H matchup analysis improvements
 2. Historical performance tracking
 3. Mobile responsive refinements
-4. ML model training and integration
-5. Email notifications (future)
+4. Email notifications (future)
 
 ---
 
-**Last Updated:** March 19, 2026
-**Version:** 2.0 (Complete Player Rankings, Multi-Player Trades, Contribution Z-Scores)
+**Last Updated:** October 23, 2026
+**Version:** 2.2 (Automatic season transitions with NBASeasonDates utility)

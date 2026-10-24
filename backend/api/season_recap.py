@@ -163,7 +163,7 @@ def get_season_recap(league_id: int):
             'user_team_recap': user_team_recap,
             'season_mvp': season_mvp,
             'category_leaders': category_leaders,
-            'generated_at': datetime.utcnow().isoformat(),
+            'generated_at': datetime.utcnow().isoformat() + 'Z',
         }
 
         logger.info('=' * 80)
