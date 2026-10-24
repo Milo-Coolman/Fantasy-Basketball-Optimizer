@@ -15,6 +15,7 @@ from backend.projections.start_limit_optimizer import (
     SLOT_ID_TO_POSITION,
     STARTING_SLOT_IDS
 )
+from backend.utils.season_dates import NBASeasonDates
 
 logger = logging.getLogger(__name__)
 
@@ -29,17 +30,13 @@ def get_current_nba_season() -> int:
     """
     Auto-detect the current NBA season based on today's date.
 
-    NBA seasons span two calendar years (e.g., 2025-26 season).
+    NBA seasons span two calendar years (e.g., 2026-27 season).
     ESPN uses the ending year as the season identifier.
 
-    - Oct-Dec: season = current_year + 1 (e.g., Oct 2025 -> 2026)
-    - Jan-Sep: season = current_year (e.g., Mar 2026 -> 2026)
+    - Oct-Dec: season = current_year + 1 (e.g., Oct 2026 -> 2027)
+    - Jan-Sep: season = current_year (e.g., Mar 2027 -> 2027)
     """
-    today = date.today()
-    if today.month >= 10:  # October or later
-        return today.year + 1
-    else:
-        return today.year
+    return NBASeasonDates.get_season_from_date()
 
 
 def get_cached_simulation(league_id: int, league: League):

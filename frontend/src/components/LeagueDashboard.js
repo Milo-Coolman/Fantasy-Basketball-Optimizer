@@ -117,7 +117,8 @@ function LeagueDashboard() {
   useEffect(() => {
     if (dashboardData?.league?.season && !initialTabSet) {
       const season = dashboardData.league.season;
-      const seasonEnd = new Date(season, 3, 13); // April 13
+      // Season ends April 13 of the season year
+      const seasonEnd = new Date(season, 3, 13); // April 13 (month is 0-indexed)
       if (new Date() > seasonEnd) {
         setActiveTab('season-recap');
       }
@@ -126,17 +127,29 @@ function LeagueDashboard() {
   }, [dashboardData, initialTabSet]);
 
   /**
-   * Check for new season availability after dashboard loads
+   * Automatically switch to new season when available
    */
   useEffect(() => {
-    const checkForNewSeason = async () => {
+    const checkAndSwitchSeason = async () => {
       if (!dashboardData?.league?.id) return;
 
       try {
         const result = await checkNewSeason(leagueId);
         if (result.new_season_available) {
-          setNewSeasonInfo(result);
-          setShowNewSeasonModal(true);
+          console.log(`New season ${result.available_season} available, auto-switching...`);
+          setSwitchingSeasons(true);
+
+          try {
+            await switchSeason(leagueId, result.available_season);
+            // Reload dashboard with new season data
+            window.location.reload();
+          } catch (switchErr) {
+            console.error('Failed to auto-switch season:', switchErr);
+            // Fall back to showing modal if auto-switch fails
+            setNewSeasonInfo(result);
+            setShowNewSeasonModal(true);
+            setSwitchingSeasons(false);
+          }
         }
       } catch (err) {
         // Silently fail - not critical
@@ -144,7 +157,7 @@ function LeagueDashboard() {
       }
     };
 
-    checkForNewSeason();
+    checkAndSwitchSeason();
   }, [dashboardData?.league?.id, leagueId]);
 
   /**
@@ -229,10 +242,12 @@ function LeagueDashboard() {
   };
 
   /**
-   * Calculate current fantasy week
+   * Calculate current fantasy week based on league season
    */
   const getCurrentWeek = () => {
-    const seasonStart = new Date('2024-10-22');
+    const season = league?.season || new Date().getFullYear();
+    // Season starts October 22 of the previous year
+    const seasonStart = new Date(season - 1, 9, 22); // October is month 9 (0-indexed)
     const now = new Date();
     const weeksDiff = Math.floor((now - seasonStart) / (7 * 24 * 60 * 60 * 1000));
     return Math.max(1, weeksDiff + 1);
@@ -255,6 +270,18 @@ function LeagueDashboard() {
         <div className="loading-container">
           <div className="loading-spinner"></div>
           <p>Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Season switching state
+  if (switchingSeasons) {
+    return (
+      <div className="league-dashboard">
+        <div className="loading-container">
+          <div className="loading-spinner"></div>
+          <p>Switching to new season...</p>
         </div>
       </div>
     );

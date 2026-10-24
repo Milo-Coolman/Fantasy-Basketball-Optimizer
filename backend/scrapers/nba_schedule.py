@@ -2,7 +2,7 @@
 """
 NBA Schedule Scraper and Cache.
 
-This module fetches and caches the NBA schedule for the 2025-26 season,
+This module fetches and caches NBA schedules for any season,
 providing functions to get remaining games for each team and player.
 
 Features:
@@ -10,11 +10,12 @@ Features:
 - Caches schedule data to avoid repeated requests
 - Provides remaining games for any team/player
 - Identifies back-to-backs and rest patterns
+- Supports dynamic season dates via NBASeasonDates utility
 
 Usage:
     from backend.scrapers.nba_schedule import NBASchedule
 
-    schedule = NBASchedule()
+    schedule = NBASchedule(season=2027)  # 2026-27 season
     remaining_games = schedule.get_team_remaining_games('BOS')
     back_to_backs = schedule.get_team_back_to_backs('LAL')
 """
@@ -29,6 +30,8 @@ from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+
+from backend.utils.season_dates import NBASeasonDates
 
 logger = logging.getLogger(__name__)
 
@@ -81,33 +84,28 @@ TEAM_ABBR_ALIASES = {
     'UTAH': 'UTA',
 }
 
-# 2025-26 NBA Season dates
-SEASON_2026 = {
-    'start': date(2025, 10, 21),  # Approximate start
-    'end': date(2026, 4, 12),     # Approximate end of regular season
-    'all_star_break_start': date(2026, 2, 13),
-    'all_star_break_end': date(2026, 2, 18),
-}
-
-
 class NBASchedule:
     """
     NBA Schedule manager with caching and utility functions.
 
-    Provides access to NBA team schedules for the 2025-26 season,
+    Provides access to NBA team schedules for any season,
     with functions to get remaining games, back-to-backs, etc.
+
+    Season dates are calculated dynamically via NBASeasonDates utility.
     """
 
-    def __init__(self, cache_dir: Optional[str] = None, season: int = 2026):
+    def __init__(self, cache_dir: Optional[str] = None, season: int = None):
         """
         Initialize the NBA Schedule manager.
 
         Args:
             cache_dir: Directory to store cached schedule data.
                        Defaults to backend/scrapers/cache/
-            season: NBA season year (e.g., 2026 for 2025-26 season)
+            season: NBA season year (e.g., 2027 for 2026-27 season).
+                    If not provided, auto-detects from current date.
         """
-        self.season = season
+        # Auto-detect season from current date if not provided
+        self.season = season if season is not None else NBASeasonDates.get_season_from_date()
 
         if cache_dir is None:
             cache_dir = os.path.join(
@@ -266,9 +264,10 @@ class NBASchedule:
         # ESPN API endpoint for NBA scoreboard
         base_url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 
-        # Iterate through season dates
-        current_date = SEASON_2026['start']
-        end_date = SEASON_2026['end']
+        # Get season dates dynamically
+        season_dates = NBASeasonDates.get_season_dates_dict(self.season)
+        current_date = season_dates['start']
+        end_date = season_dates['end']
 
         while current_date <= end_date:
             try:
@@ -325,10 +324,12 @@ class NBASchedule:
 
         schedule = {abbr: [] for abbr in NBA_TEAMS.keys()}
 
-        start_date = SEASON_2026['start']
-        end_date = SEASON_2026['end']
-        all_star_start = SEASON_2026['all_star_break_start']
-        all_star_end = SEASON_2026['all_star_break_end']
+        # Get season dates dynamically
+        season_dates = NBASeasonDates.get_season_dates_dict(self.season)
+        start_date = season_dates['start']
+        end_date = season_dates['end']
+        all_star_start = season_dates['all_star_break_start']
+        all_star_end = season_dates['all_star_break_end']
 
         # Generate ~82 game dates per team
         # Roughly 3.5 games per week over 26 weeks

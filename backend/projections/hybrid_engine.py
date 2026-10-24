@@ -2,16 +2,17 @@
 """
 Hybrid Projection Engine for Fantasy Basketball.
 
-This module combines ML-based and statistical projections with dynamic
-weighting based on season progress, adjusts for league-specific scoring,
+This module combines ESPN projections with current season stats using
+tiered weighting based on games played, adjusts for league-specific scoring,
 and provides comprehensive player projections with confidence scores.
 
-Weighting Strategy:
-- All season phases: 80% statistical, 20% ML
-- FT% uses regression-to-mean instead of ML (FT% is highly stable year-to-year)
+Weighting Strategy (based on games played):
+- 0-5 games: 100% ESPN projections (no current stats yet)
+- 6-15 games: 60% ESPN projections, 40% current season
+- 16-35 games: 16% ESPN projections, 84% current season
+- 35+ games: 100% current season stats
 
-The 80/20 ratio favors current season performance, as actual stats are
-generally more predictive than ML model outputs for fantasy purposes.
+FT% uses regression-to-mean (highly stable year-to-year).
 
 Reference: PRD Section 3.3.4 - Hybrid Projection Engine
 """
@@ -28,25 +29,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
+from backend.utils.season_dates import NBASeasonDates
+
 # Try relative imports first (when used as a package), then absolute imports
-ML_AVAILABLE = False
 STAT_ENGINE_AVAILABLE = False
 SIMPLE_ENGINE_AVAILABLE = False
-
-try:
-    from .ml_model import (
-        FantasyBasketballMLModel,
-        TrainedModel,
-        COUNTING_STATS as ML_COUNTING_STATS,
-        SHOOTING_STATS as ML_SHOOTING_STATS,
-    )
-    ML_AVAILABLE = True
-except ImportError as e:
-    logging.getLogger(__name__).warning(f"ML model import failed: {e}")
-    FantasyBasketballMLModel = None
-    TrainedModel = None
-    ML_COUNTING_STATS = []
-    ML_SHOOTING_STATS = []
 
 try:
     from .statistical_model import (
@@ -94,36 +81,24 @@ GAMES_TIER_3_MAX = 35   # 16-35 games: current stats dominant
 # 35+ games: 100% current season stats
 
 # Tiered weights based on player's games played this season
-# Sources: espn_projection, current_season, ml
-# Note: Previous season stats removed - ESPN API doesn't provide them for current season connection
+# Sources: espn_projection, current_season
 TIERED_WEIGHTS = {
-    'tier_1': {  # 0-5 games
-        'espn_projection': 0.90,
+    'tier_1': {  # 0-5 games: rely on ESPN projections
+        'espn_projection': 1.00,
         'current_season': 0.00,
-        'ml': 0.10,
     },
-    'tier_2': {  # 6-15 games
-        'espn_projection': 0.55,
-        'current_season': 0.35,
-        'ml': 0.10,
+    'tier_2': {  # 6-15 games: blend projections with emerging stats
+        'espn_projection': 0.60,
+        'current_season': 0.40,
     },
-    'tier_3': {  # 16-35 games
+    'tier_3': {  # 16-35 games: current stats dominant
         'espn_projection': 0.15,
-        'current_season': 0.80,
-        'ml': 0.05,
+        'current_season': 0.85,
     },
-    'tier_4': {  # 35+ games
+    'tier_4': {  # 35+ games: 100% current season stats
         'espn_projection': 0.00,
         'current_season': 1.00,
-        'ml': 0.00,
     },
-}
-
-# Legacy weights (kept for backward compatibility)
-SEASON_WEIGHTS = {
-    'early': {'statistical': 0.80, 'ml': 0.20},
-    'mid': {'statistical': 0.80, 'ml': 0.20},
-    'late': {'statistical': 0.80, 'ml': 0.20},
 }
 
 # NBA season length
@@ -281,8 +256,8 @@ class HybridProjection:
 
     # Core projections
     projected_stats: Dict[str, float]
-    ml_contribution: Dict[str, float]
-    statistical_contribution: Dict[str, float]
+    espn_contribution: Dict[str, float]
+    current_season_contribution: Dict[str, float]
 
     # Rest of season
     ros_totals: Dict[str, float]
@@ -299,9 +274,9 @@ class HybridProjection:
     confidence_intervals: Dict[str, Tuple[float, float]] = field(default_factory=dict)
 
     # Weights used
-    ml_weight: float = 0.5
-    statistical_weight: float = 0.5
-    season_phase: str = "mid"
+    espn_weight: float = 0.5
+    current_season_weight: float = 0.5
+    weight_tier: str = "tier_2"
 
     # Metadata
     projection_date: datetime = field(default_factory=datetime.now)
@@ -329,9 +304,9 @@ class HybridProjection:
                 k: {'low': round(v[0], 2), 'high': round(v[1], 2)}
                 for k, v in self.confidence_intervals.items()
             },
-            'ml_weight': round(self.ml_weight, 2),
-            'statistical_weight': round(self.statistical_weight, 2),
-            'season_phase': self.season_phase,
+            'espn_weight': round(self.espn_weight, 2),
+            'current_season_weight': round(self.current_season_weight, 2),
+            'weight_tier': self.weight_tier,
             'projection_date': self.projection_date.isoformat(),
             'league_id': self.league_id,
             'injury_details': self.injury_details,
@@ -344,50 +319,30 @@ class HybridProjection:
 
 class HybridProjectionEngine:
     """
-    Combines ML and statistical projections with dynamic weighting.
+    Combines ESPN projections with current season stats using tiered weighting.
 
-    The engine automatically adjusts the balance between data sources
-    based on how far into the NBA season we are, with statistical
-    projections weighted more heavily early (when we have less
-    current-season data) and ML weighted more heavily late (when
-    we have more data to learn from).
+    The engine automatically adjusts the balance between ESPN projections
+    and current season stats based on how many games the player has played,
+    with ESPN projections weighted more heavily early (when we have less
+    current-season data) and current stats weighted more heavily as the
+    season progresses.
 
-    Falls back to simple projection when ML/statistical engines aren't available.
+    Falls back to simple projection when statistical engine isn't available.
     """
 
     def __init__(
         self,
-        ml_model: Optional['FantasyBasketballMLModel'] = None,
         statistical_engine: Optional['StatisticalProjectionEngine'] = None,
-        models_dir: Optional[str] = None,
         use_simple_fallback: bool = True
     ):
         """
         Initialize the hybrid projection engine.
 
         Args:
-            ml_model: Pre-loaded ML model instance
             statistical_engine: Pre-loaded statistical engine
-            models_dir: Directory containing trained ML models
             use_simple_fallback: Use simple projection when other engines unavailable
         """
-        self.ml_models_loaded = False
         self.use_simple_fallback = use_simple_fallback
-
-        # Initialize ML model
-        if ml_model:
-            self.ml_model = ml_model
-            self.ml_models_loaded = True
-        elif ML_AVAILABLE and FantasyBasketballMLModel is not None:
-            try:
-                self.ml_model = FantasyBasketballMLModel(models_dir=models_dir)
-                self._load_ml_models()
-            except Exception as e:
-                logger.warning(f"Could not initialize ML model: {e}")
-                self.ml_model = None
-        else:
-            logger.info("ML model not available - using statistical/simple projections only")
-            self.ml_model = None
 
         # Initialize statistical engine
         if statistical_engine:
@@ -419,8 +374,8 @@ class HybridProjectionEngine:
         self._nba_schedule = None  # Lazy-loaded NBA schedule
 
         # Log initialization status
-        logger.info(f"HybridProjectionEngine initialized: ML={self.ml_model is not None}, "
-                   f"Stat={self.stat_engine is not None}, Simple={self.simple_engine is not None}")
+        logger.info(f"HybridProjectionEngine initialized: Stat={self.stat_engine is not None}, "
+                   f"Simple={self.simple_engine is not None}")
 
     def _use_simple_fallback(
         self,
@@ -461,8 +416,8 @@ class HybridProjectionEngine:
             team=team,
             position=position,
             projected_stats=simple_proj.projected_per_game,
-            ml_contribution={},
-            statistical_contribution=simple_proj.projected_per_game,
+            espn_contribution={},
+            current_season_contribution=simple_proj.projected_per_game,
             ros_totals=simple_proj.ros_totals,
             games_remaining=simple_proj.games_remaining,
             games_projected=simple_proj.games_projected,
@@ -470,22 +425,12 @@ class HybridProjectionEngine:
             category_values={},
             confidence_score=simple_proj.confidence_score,
             confidence_intervals={},
-            ml_weight=0.0,
-            statistical_weight=1.0,
-            season_phase='simple_fallback',
+            espn_weight=0.0,
+            current_season_weight=1.0,
+            weight_tier='simple_fallback',
             league_id=league_id,
             injury_details=player_data.get('injury_details'),  # Pass through ESPN injury data
         )
-
-    def _load_ml_models(self) -> None:
-        """Load ML models from disk if available."""
-        try:
-            if self.ml_model.load_all_models():
-                logger.info("ML models loaded successfully")
-            else:
-                logger.warning("No ML models found - ML projections will be unavailable")
-        except Exception as e:
-            logger.warning(f"Could not load ML models: {e}")
 
     # =========================================================================
     # Main Projection Interface
@@ -641,8 +586,8 @@ class HybridProjectionEngine:
                     team=team,
                     position=position,
                     projected_stats={},
-                    ml_contribution={},
-                    statistical_contribution={},
+                    espn_contribution={},
+                    current_season_contribution={},
                     ros_totals={},
                     games_remaining=0,
                     games_projected=0,
@@ -650,9 +595,9 @@ class HybridProjectionEngine:
                     category_values={},
                     confidence_score=0.0,
                     confidence_intervals={},
-                    ml_weight=0.0,
-                    statistical_weight=0.0,
-                    season_phase='no_data',
+                    espn_weight=0.0,
+                    current_season_weight=0.0,
+                    weight_tier='no_data',
                     league_id=league_id,
                     injury_details=player_data.get('injury_details'),  # Pass through ESPN injury data
                 )
@@ -662,9 +607,6 @@ class HybridProjectionEngine:
             tiered_weights = self._get_tiered_weights(games_played)
             weight_tier = self._get_weight_tier_name(games_played)
 
-            # Determine season phase (for metadata)
-            season_phase = self._get_season_phase()
-
             # Get league settings
             if league_settings is None:
                 if league_id and league_id in self._league_settings_cache:
@@ -672,26 +614,17 @@ class HybridProjectionEngine:
                 else:
                     league_settings = LeagueScoringSettings.default_h2h_category()
 
-            # Generate ML projection (only if weight > 0 and ML available)
-            ml_projection = None
-            if tiered_weights['ml'] > 0 and self.ml_model is not None:
-                ml_projection = self._get_ml_projection(
-                    player_data=player_data,
-                    season_stats=season_stats
-                )
-
-            # Combine projections using tiered system (3 sources: ESPN, Current, ML)
+            # Combine projections using tiered system (2 sources: ESPN, Current)
             combined_stats, contributions = self._combine_projections_tiered(
                 espn_projection=espn_projection,
                 current_season=season_stats,
-                ml_projection=ml_projection,
                 games_played=games_played,
                 player_name=player_name
             )
 
-            # For backward compatibility, extract ml and stat contributions
-            ml_contrib = contributions.get('ml', {})
-            stat_contrib = contributions.get('current_season', {})
+            # Extract contributions for each source
+            espn_contrib = contributions.get('espn_projection', {})
+            current_contrib = contributions.get('current_season', {})
 
             # Apply league-specific adjustments
             adjusted_stats = self._apply_league_adjustments(
@@ -751,11 +684,10 @@ class HybridProjectionEngine:
             )
 
             # Calculate confidence score based on data availability and games played
-            # More sources and more games = higher confidence (3 sources max: ESPN, Curr, ML)
+            # More sources and more games = higher confidence (2 sources max: ESPN, Current)
             sources_available = sum([
                 1 if espn_projection else 0,
                 1 if season_stats else 0,
-                1 if ml_projection else 0
             ])
             confidence_score = self._calculate_confidence_score_tiered(
                 games_played=games_played,
@@ -777,8 +709,8 @@ class HybridProjectionEngine:
                 team=team,
                 position=position,
                 projected_stats=adjusted_stats,
-                ml_contribution=ml_contrib,
-                statistical_contribution=stat_contrib,
+                espn_contribution=espn_contrib,
+                current_season_contribution=current_contrib,
                 ros_totals=ros_totals,
                 games_remaining=games_remaining,
                 games_projected=games_projected,
@@ -786,9 +718,9 @@ class HybridProjectionEngine:
                 category_values=category_values,
                 confidence_score=confidence_score,
                 confidence_intervals=confidence_intervals,
-                ml_weight=tiered_weights['ml'],
-                statistical_weight=tiered_weights['current_season'],
-                season_phase=weight_tier,  # Show which tier was used
+                espn_weight=tiered_weights['espn_projection'],
+                current_season_weight=tiered_weights['current_season'],
+                weight_tier=weight_tier,
                 league_id=league_id,
                 injury_details=injury_details,  # Pass through ESPN injury data
             )
@@ -1193,136 +1125,27 @@ class HybridProjectionEngine:
             logger.warning(f"Statistical projection failed: {e}")
             return None
 
-    def _get_ml_projection(
-        self,
-        player_data: Dict[str, Any],
-        season_stats: Optional[Dict[str, float]]
-    ) -> Dict[str, float]:
-        """Get projection from ML models."""
-        if not season_stats:
-            return {}
-
-        # Check if ML models are loaded
-        if not self.ml_model.counting_models and not self.ml_model.shooting_models:
-            return {}
-
-        try:
-            # Build feature DataFrame for prediction
-            features = self._build_ml_features(player_data, season_stats)
-
-            if features.empty:
-                return {}
-
-            # Get predictions
-            predictions = self.ml_model.predict_player_stats(features)
-
-            # Convert to single values (predictions are arrays)
-            return {
-                stat: float(values[0]) if len(values) > 0 else 0.0
-                for stat, values in predictions.items()
-            }
-        except Exception as e:
-            logger.warning(f"ML projection failed: {e}")
-            return {}
-
-    def _build_ml_features(
-        self,
-        player_data: Dict[str, Any],
-        season_stats: Dict[str, float]
-    ) -> pd.DataFrame:
-        """
-        Build feature DataFrame for ML prediction.
-
-        Args:
-            player_data: Player information
-            season_stats: Current season stats
-
-        Returns:
-            DataFrame with features for ML models
-        """
-        features = {}
-
-        # Demographics
-        features['age'] = player_data.get('age', 25)
-
-        # Playing time
-        features['mp'] = season_stats.get('mp', season_stats.get('minutes', 25))
-        features['g'] = player_data.get('games_played', 40)
-        features['gs_pct'] = season_stats.get('gs_pct', 0.5)
-
-        # Stats from season averages
-        for stat in ['pts', 'trb', 'ast', 'stl', 'blk', 'tov', '3p',
-                     'fg_pct', 'ft_pct', 'fga', 'fta']:
-            features[stat] = season_stats.get(stat, 0)
-
-        # Advanced stats
-        features['usg_pct'] = season_stats.get('usg_pct', 0.20)
-        features['ts_pct'] = season_stats.get('ts_pct', 0.55)
-        features['per'] = season_stats.get('per', 15.0)
-        features['bpm'] = season_stats.get('bpm', 0.0)
-        features['vorp'] = season_stats.get('vorp', 0.0)
-        features['ws'] = season_stats.get('ws', 0.0)
-        features['efg_pct'] = season_stats.get('efg_pct', features.get('fg_pct', 0.45))
-
-        # Shooting profile
-        fga = features.get('fga', 1)
-        features['3p_rate'] = season_stats.get('3pa', 0) / max(fga, 1)
-        features['ft_rate'] = season_stats.get('fta', 0) / max(fga, 1)
-
-        # Position encoding
-        # Handle position as int (ESPN position ID) or string
-        raw_position = player_data.get('position', '')
-        if isinstance(raw_position, int):
-            # ESPN position IDs: 1=PG, 2=SG, 3=SF, 4=PF, 5=C
-            ESPN_POSITION_MAP = {
-                0: 'PG', 1: 'PG', 2: 'SG', 3: 'SF', 4: 'PF', 5: 'C',
-                6: 'G', 7: 'F', 8: 'UTIL', 9: 'G/F', 10: 'F/C', 11: 'UTIL'
-            }
-            position = ESPN_POSITION_MAP.get(raw_position, 'UTIL')
-        else:
-            position = str(raw_position).upper() if raw_position else ''
-        features['is_guard'] = 1 if 'G' in position or position in ['PG', 'SG'] else 0
-        features['is_forward'] = 1 if 'F' in position or position in ['SF', 'PF'] else 0
-        features['is_center'] = 1 if 'C' in position else 0
-
-        # Per-36 estimates
-        mp = features.get('mp', 25)
-        if mp > 0:
-            for stat in ['pts', 'trb', 'ast', 'stl', 'blk']:
-                features[f'{stat}_per36'] = (features.get(stat, 0) / mp) * 36
-
-        # Previous season (use current as proxy if not available)
-        for stat in ['pts', 'trb', 'ast', 'mp', 'g']:
-            features[f'{stat}_prev_season'] = features.get(stat, 0) * 0.95
-
-        return pd.DataFrame([features])
-
     def _combine_projections_tiered(
         self,
         espn_projection: Optional[Dict[str, float]],
         current_season: Optional[Dict[str, float]],
-        ml_projection: Optional[Dict[str, float]],
         games_played: int,
         player_name: str = "Unknown"
     ) -> Tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
         """
-        Combine projections from 3 sources using tiered weights based on games played.
+        Combine projections from 2 sources using tiered weights based on games played.
 
-        Tiered system (3 sources: ESPN, Current, ML):
-        - 0-5 games:   90% ESPN proj, 0% current, 10% ML
-        - 6-15 games:  55% ESPN proj, 35% current, 10% ML
-        - 16-35 games: 15% ESPN proj, 80% current, 5% ML
+        Tiered system (2 sources: ESPN, Current):
+        - 0-5 games:   100% ESPN projections
+        - 6-15 games:  60% ESPN proj, 40% current
+        - 16-35 games: 15% ESPN proj, 85% current
         - 35+ games:   100% current season stats
-
-        Note: Previous season stats are not used because ESPN API doesn't provide them
-        for the current season connection.
 
         FT% uses regression-to-mean instead of the tiered system.
 
         Args:
             espn_projection: ESPN's preseason/ROS projection
             current_season: Player's current season stats
-            ml_projection: ML model projection
             games_played: Number of games player has played this season
             player_name: Player name for logging
 
@@ -1333,7 +1156,6 @@ class HybridProjectionEngine:
         contributions = {
             'espn_projection': {},
             'current_season': {},
-            'ml': {}
         }
 
         # Get tiered weights based on games played
@@ -1355,14 +1177,13 @@ class HybridProjectionEngine:
         # Ensure all sources are dicts (not None)
         espn_projection = espn_projection or {}
         current_season = current_season or {}
-        ml_projection = ml_projection or {}
 
-        # Log tier and source availability (3 sources: ESPN, Curr, ML)
+        # Log tier and source availability
         logger.info(f"[HYBRID] {player_name}: Tier={tier_name}, Games={games_played}")
-        logger.info(f"[HYBRID] {player_name}: Weights: ESPN={weights['espn_projection']:.0%}, Curr={weights['current_season']:.0%}, ML={weights['ml']:.0%}")
+        logger.info(f"[HYBRID] {player_name}: Weights: ESPN={weights['espn_projection']:.0%}, Curr={weights['current_season']:.0%}")
 
         # Detailed source availability logging
-        logger.info(f"[HYBRID] {player_name}: Sources: ESPN={len(espn_projection)} keys, Curr={len(current_season)} keys, ML={len(ml_projection)} keys")
+        logger.info(f"[HYBRID] {player_name}: Sources: ESPN={len(espn_projection)} keys, Curr={len(current_season)} keys")
 
         # Log sample values from each source
         if espn_projection and len(espn_projection) > 0:
@@ -1378,11 +1199,10 @@ class HybridProjectionEngine:
         else:
             logger.warning(f"[HYBRID] {player_name}: NO CURRENT SEASON STATS AVAILABLE!")
 
-        # Get all stats from all 3 sources, prioritizing core categories
+        # Get all stats from both sources, prioritizing core categories
         all_stats = (
             set(espn_projection.keys()) |
             set(current_season.keys()) |
-            set(ml_projection.keys()) |
             set(CORE_CATEGORIES) |
             set(PERCENTAGE_CATEGORIES) |
             set(COMPONENT_STATS)
@@ -1439,7 +1259,6 @@ class HybridProjectionEngine:
             sources = {
                 'espn_projection': get_stat_value(espn_projection, stat),
                 'current_season': get_stat_value(current_season, stat),
-                'ml': get_stat_value(ml_projection, stat)
             }
 
             # Calculate weighted average using only available sources
@@ -1489,34 +1308,6 @@ class HybridProjectionEngine:
             logger.warning(f"[HYBRID] {player_name}: COMBINED STATS DICT IS EMPTY!")
 
         return combined, contributions
-
-    def _combine_projections(
-        self,
-        stat_projection: Dict[str, float],
-        ml_projection: Dict[str, float],
-        ml_weight: float,
-        stat_weight: float,
-        season_stats: Optional[Dict[str, float]] = None
-    ) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
-        """
-        DEPRECATED: Use _combine_projections_tiered instead.
-
-        Legacy method for backward compatibility.
-        """
-        # Convert to tiered format using current season as primary
-        combined, contributions = self._combine_projections_tiered(
-            espn_projection=None,
-            current_season=stat_projection,
-            ml_projection=ml_projection,
-            games_played=35,  # Use tier_4 weights (100% current)
-            player_name="Legacy"
-        )
-
-        # Convert contributions to legacy format
-        ml_contrib = contributions.get('ml', {})
-        stat_contrib = contributions.get('current_season', {})
-
-        return combined, ml_contrib, stat_contrib
 
     # =========================================================================
     # League Adjustments
@@ -1843,60 +1634,22 @@ class HybridProjectionEngine:
         Returns:
             Season progress fraction, or -1 if offseason
         """
-        today = date.today()
-
-        # Approximate season dates
-        if today.month >= 10:
-            season_start = date(today.year, 10, 22)
-            season_end = date(today.year + 1, 4, 15)
-        elif today.month <= 4:
-            season_start = date(today.year - 1, 10, 22)
-            season_end = date(today.year, 4, 15)
-        else:
-            # Offseason (May-September)
+        # Use centralized season dates utility
+        if NBASeasonDates.is_offseason():
             return -1.0
 
-        if today < season_start:
-            return -1.0
-        if today > season_end:
-            return 1.0
-
-        total_days = (season_end - season_start).days
-        elapsed_days = (today - season_start).days
-
-        return elapsed_days / total_days
-
-    def _get_dynamic_weights(
-        self,
-        phase: SeasonPhase
-    ) -> Tuple[float, float]:
-        """
-        Get ML and statistical weights based on season phase.
-
-        DEPRECATED: Use _get_tiered_weights instead for games-based weighting.
-
-        Args:
-            phase: Current season phase
-
-        Returns:
-            Tuple of (ml_weight, statistical_weight)
-        """
-        if phase == SeasonPhase.OFFSEASON:
-            # Offseason: rely more on projections/historical
-            return 0.20, 0.80
-
-        weights = SEASON_WEIGHTS.get(phase.value, SEASON_WEIGHTS['mid'])
-        return weights['ml'], weights['statistical']
+        season = NBASeasonDates.get_season_from_date()
+        return NBASeasonDates.get_season_progress(season)
 
     def _get_tiered_weights(self, games_played: int) -> Dict[str, float]:
         """
         Get projection weights based on player's games played this season.
 
         Tiered system:
-        - 0-5 games:   60% ESPN proj, 30% prev season, 0% current, 10% ML
-        - 6-15 games:  35% ESPN proj, 20% prev season, 35% current, 10% ML
-        - 16-35 games: 15% ESPN proj, 10% prev season, 70% current, 5% ML
-        - 35+ games:   0% ESPN proj, 0% prev season, 100% current, 0% ML
+        - 0-5 games:   100% ESPN projections
+        - 6-15 games:  60% ESPN proj, 40% current
+        - 16-35 games: 15% ESPN proj, 85% current
+        - 35+ games:   100% current season stats
 
         Args:
             games_played: Number of games player has played this season
@@ -2173,7 +1926,8 @@ class HybridProjectionEngine:
         if not schedule_dates:
             # Fallback: estimate based on days remaining
             today = date.today()
-            season_end = date(today.year if today.month <= 4 else today.year + 1, 4, 13)
+            season = NBASeasonDates.get_season_from_date()
+            season_end = NBASeasonDates.get_season_end(season)
             days_from_date = (season_end - after_date).days
             total_days = (season_end - today).days
             if total_days <= 0:
@@ -2530,13 +2284,10 @@ def main():
     # Show current season phase
     phase = engine._get_season_phase()
     progress = engine._get_season_progress()
-    ml_weight, stat_weight = engine._get_dynamic_weights(phase)
 
     print(f"\nSeason Status:")
     print(f"  Phase: {phase.value}")
     print(f"  Progress: {progress*100:.1f}%" if progress >= 0 else "  Progress: Offseason")
-    print(f"  ML Weight: {ml_weight:.0%}")
-    print(f"  Statistical Weight: {stat_weight:.0%}")
 
     # Example player
     player_data = {
@@ -2590,21 +2341,21 @@ def main():
     print(f"Team: {projection.team} | Position: {projection.position}")
     print(f"Games Projected ROS: {projection.games_projected}")
     print(f"Confidence Score: {projection.confidence_score:.0f}/100")
-    print(f"Season Phase: {projection.season_phase}")
+    print(f"Weight Tier: {projection.weight_tier}")
 
     print("\nProjected Per-Game Stats:")
     print("-" * 50)
-    print(f"{'Stat':<8} {'Proj':>8} {'ML':>8} {'Stat':>8} {'CI':>20}")
+    print(f"{'Stat':<8} {'Proj':>8} {'ESPN':>8} {'Curr':>8} {'CI':>20}")
     print("-" * 50)
 
     for stat in ['pts', 'trb', 'ast', 'stl', 'blk', '3p', 'tov', 'fg_pct', 'ft_pct']:
         if stat in projection.projected_stats:
             proj = projection.projected_stats[stat]
-            ml = projection.ml_contribution.get(stat, 0)
-            st = projection.statistical_contribution.get(stat, 0)
+            espn = projection.espn_contribution.get(stat, 0)
+            curr = projection.current_season_contribution.get(stat, 0)
             ci = projection.confidence_intervals.get(stat, (0, 0))
             ci_str = f"[{ci[0]:.2f}-{ci[1]:.2f}]"
-            print(f"{stat.upper():<8} {proj:>8.2f} {ml:>8.2f} {st:>8.2f} {ci_str:>20}")
+            print(f"{stat.upper():<8} {proj:>8.2f} {espn:>8.2f} {curr:>8.2f} {ci_str:>20}")
 
     print("\nFantasy Value:")
     print("-" * 40)

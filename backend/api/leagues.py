@@ -11,6 +11,8 @@ import logging
 from datetime import datetime
 
 from flask import Blueprint, request, jsonify
+
+from backend.utils.season_dates import NBASeasonDates
 from flask_login import login_required, current_user
 
 from backend.services.espn_client import (
@@ -843,19 +845,8 @@ def check_new_season(league_id):
 
         current_season = league.season
 
-        # Determine what season should be current based on date
-        # NBA season runs Oct-Apr, so:
-        # - Oct-Dec: current year's season (e.g., Oct 2026 = 2027 season)
-        # - Jan-Apr: previous year's season (e.g., Jan 2027 = 2027 season)
-        # - May-Sep: previous season ended, new one not started
-        now = datetime.now()
-
-        if now.month >= 10:  # October-December
-            expected_season = now.year + 1
-        elif now.month <= 4:  # January-April (season in progress)
-            expected_season = now.year
-        else:  # May-September (offseason)
-            expected_season = now.year  # Next season would be now.year + 1, not started yet
+        # Get expected season from centralized utility
+        expected_season = NBASeasonDates.get_season_from_date()
 
         # Check if we're behind the expected season
         if current_season < expected_season:

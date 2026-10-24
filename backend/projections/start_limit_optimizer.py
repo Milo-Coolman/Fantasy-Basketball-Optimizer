@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 import requests
 
+from backend.utils.season_dates import NBASeasonDates
+
 logger = logging.getLogger(__name__)
 
 # ESPN Stat ID to standard key mapping
@@ -1266,7 +1268,7 @@ class StartLimitOptimizer:
         Simplified: assumes they maintain current per-game averages.
         """
         # Estimate games played so far (rough)
-        season_start = date(self.season - 1, 10, 21)
+        season_start = NBASeasonDates.get_season_start(self.season)
         days_played = (sim_start - season_start).days
         games_played = max(1, int(days_played / 7 * 3.5))  # ~3.5 games per week
 
@@ -1737,14 +1739,9 @@ class StartLimitOptimizer:
         """Get the start and end dates for the remaining season."""
         today = date.today()
 
-        # 2025-26 NBA season approximate dates
-        if self.season == 2026:
-            season_start = date(2025, 10, 21)
-            season_end = date(2026, 4, 12)
-        else:
-            # Generic calculation
-            season_start = date(self.season - 1, 10, 21)
-            season_end = date(self.season, 4, 12)
+        # Get season dates from centralized utility
+        season_start = NBASeasonDates.get_season_start(self.season)
+        season_end = NBASeasonDates.get_season_end(self.season)
 
         # Start from today if season has started
         start_date = max(today, season_start)

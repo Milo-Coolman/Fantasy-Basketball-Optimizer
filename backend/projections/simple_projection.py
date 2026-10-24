@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from backend.utils.season_dates import NBASeasonDates
+
 logger = logging.getLogger(__name__)
 
 # NBA season constants
@@ -134,12 +136,18 @@ class SimpleProjectionEngine:
     - FT% = Projected FTM / Projected FTA
     """
 
-    def __init__(self):
-        """Initialize the simple projection engine."""
-        # Use 2025-26 season dates
-        self.season_start = date(2025, 10, 22)  # 2025-26 season start
-        self.season_end = date(2026, 4, 13)     # 2025-26 season end
-        logger.debug("SimpleProjectionEngine initialized")
+    def __init__(self, season: int = None):
+        """Initialize the simple projection engine.
+
+        Args:
+            season: NBA season year (e.g., 2027 for 2026-27 season).
+                    If not provided, auto-detects from current date.
+        """
+        # Auto-detect season from current date if not provided
+        self.season = season if season is not None else NBASeasonDates.get_season_from_date()
+        self.season_start = NBASeasonDates.get_season_start(self.season)
+        self.season_end = NBASeasonDates.get_season_end(self.season)
+        logger.debug(f"SimpleProjectionEngine initialized for {self.season} season")
 
     def _get_season_progress(self) -> float:
         """Get current season progress (0.0 to 1.0)."""

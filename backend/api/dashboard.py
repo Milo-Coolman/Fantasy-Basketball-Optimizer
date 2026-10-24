@@ -16,6 +16,8 @@ from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 
 from flask import Blueprint, jsonify, request
+
+from backend.utils.season_dates import NBASeasonDates
 from flask_login import login_required, current_user
 
 from backend.extensions import db
@@ -778,36 +780,14 @@ def _estimate_games_remaining(season: Optional[int] = None) -> int:
     Estimate games remaining in the NBA season.
 
     Args:
-        season: The season year (e.g., 2026). If not provided, calculates based on current date.
-                For a 2025-26 season, pass 2026.
+        season: The season year (e.g., 2027). If not provided, calculates based on current date.
+                For a 2026-27 season, pass 2027.
     """
-    today = date.today()
-
-    # Determine season year if not provided
+    # Use centralized season dates utility
     if season is None:
-        # NBA season starts in October, so:
-        # - If it's Oct-Dec, we're in the season ending next year
-        # - If it's Jan-Apr, we're in the season that started last year
-        if today.month >= 10:
-            season = today.year + 1  # e.g., Oct 2025 -> 2026 season
-        else:
-            season = today.year  # e.g., Feb 2026 -> 2026 season
+        season = NBASeasonDates.get_season_from_date()
 
-    # NBA season typically runs late October to mid-April
-    # Season year refers to the ending year (e.g., 2026 means 2025-26 season)
-    season_start = date(season - 1, 10, 22)  # e.g., Oct 22, 2025 for 2026 season
-    season_end = date(season, 4, 13)         # e.g., Apr 13, 2026 for 2026 season
-
-    if today < season_start:
-        return 82
-    if today > season_end:
-        return 0
-
-    total_days = (season_end - season_start).days
-    elapsed_days = (today - season_start).days
-    progress = elapsed_days / total_days
-
-    return max(0, int(82 * (1 - progress)))
+    return NBASeasonDates.estimate_games_remaining(season)
 
 
 def calculate_projected_team_totals(

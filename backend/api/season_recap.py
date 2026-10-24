@@ -21,6 +21,8 @@ from backend.api.dashboard import (
 from datetime import date, datetime
 import logging
 
+from backend.utils.season_dates import NBASeasonDates
+
 logger = logging.getLogger(__name__)
 
 season_recap_bp = Blueprint('season_recap', __name__)
@@ -31,14 +33,12 @@ def is_season_complete(season: int) -> bool:
     Check if NBA regular season is complete.
 
     Args:
-        season: The season year (e.g., 2026)
+        season: The season year (e.g., 2027)
 
     Returns:
         True if current date is past the regular season end
     """
-    # NBA regular season typically ends mid-April
-    season_end = date(season, 4, 13)
-    return date.today() > season_end
+    return NBASeasonDates.is_season_complete(season)
 
 
 @season_recap_bp.route('/leagues/<int:league_id>/season-recap', methods=['GET'])
